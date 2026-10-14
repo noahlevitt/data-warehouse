@@ -81,7 +81,7 @@ def compare_file(name: str, data: bytes, target, records_schema, rs: RecordStore
     imp = rs.create_import(biz, sid, name, hashlib.sha1(data).hexdigest(), rr.sheet, "parity")
     RecordSink(rs, None).save(0, _Rec(imp, mr), rr, result, records_schema)
     tag = rs.create_tag(biz, "all")
-    cond, params = F.where(F.all_records(), [], businesses=[biz])
+    cond, params = F.where(F.find_node([{"businesses": [biz]}]), [])
     rs.add_to_tag(tag, cond, params)
     exp, _ = export_table(rs.db, tag, records_schema, target)
 
