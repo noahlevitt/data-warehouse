@@ -833,7 +833,9 @@ def _map_generic_dates(schema: TargetSchema, profiles: list[ColumnProfile], fiel
 
     Nothing happens when a last-activity field (any datetime field) already has a column by name ("Last Visit",
     "Last Call", "Last Reward Redeemed"): a row has one last date, so a generic or creation date isn't added on top.
-    (A file that names both a last call and a last transaction keeps both from step 1.)
+    (A file that names both a last call and a last transaction keeps both from step 1.) A field marked
+    ``creation_date`` in the schema (Customer Records' first_visit) isn't a last-activity field: it having a column
+    changes nothing here, and the column it took is no longer a candidate.
 
     Otherwise one column goes to the first-choice field - ``generic_date: call_log`` in a call log
     (:func:`_looks_like_call_log`), ``generic_date: default`` otherwise - chosen in this order:
@@ -854,7 +856,8 @@ def _map_generic_dates(schema: TargetSchema, profiles: list[ColumnProfile], fiel
     targets = {f.generic_date: f.name for f in schema.auto_fields if f.generic_date}
     if not targets:
         return
-    if any(f.type == "datetime" and fields[f.name].transform != "none" for f in schema.auto_fields):
+    if any(f.type == "datetime" and not f.creation_date and fields[f.name].transform != "none"
+           for f in schema.auto_fields):
         return  # the file already gives a last date by name
     call_log = _looks_like_call_log(profiles)
     target = targets.get("call_log" if call_log else "default") or next(iter(targets.values()))
