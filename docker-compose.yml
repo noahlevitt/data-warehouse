@@ -37,7 +37,7 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "8501:8501"          # put a reverse proxy with HTTPS in front (see README) before exposing publicly
+      - "8502:8502"          # 8502: the file converter keeps 8501. Put a reverse proxy with HTTPS in front (see README)
     volumes:
       - ./data:/app/data                 # templates, import jobs and each import's files (SQLite + folders)
       - ./schemas:/app/schemas:ro        # record fields and export format — edit on the host
