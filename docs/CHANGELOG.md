@@ -4,6 +4,11 @@ What changed in each version of Customer Records. The running version is shown i
 is tagged in git (`vX.Y.Z`). The history of the file converter this project is based on is in
 [converter/CHANGELOG.md](converter/CHANGELOG.md).
 
+## 1.0.1
+
+- **Opens at http://localhost:8502** instead of 8501, so it runs next to the file converter, which keeps 8501 on
+  the same computer. Docker publishes 8502 too. `PORT=8600 ./run_local.sh` still picks another port.
+
 ## 1.0.0 — first prototype
 
 Based on file-converter 0.21.2.
