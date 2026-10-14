@@ -13,7 +13,7 @@ at. Any difference is either expected (and explained in the changelog) or a regr
 
 Usage (from the repository root)::
 
-    python scripts/regression/regression.py check v0.21.2      # this working tree vs. a tagged version
+    python scripts/regression/regression.py check v1.0.0       # this working tree vs. a tagged version
     python scripts/regression/regression.py run out.json       # summarise this working tree only
     python scripts/regression/regression.py compare a.json b.json
 
