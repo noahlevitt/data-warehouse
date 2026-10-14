@@ -11,7 +11,7 @@ kind            searched on
 ==============  ===========================================================================================
 ``text``        a text column of the record (names, email, address, city, state, ZIP…)
 ``phone``       the record's phone numbers (any of them; digits only, any formatting typed)
-``number``      a number column (total visits, total spent), or the record number / file row
+``number``      a number column (total visits, total spent), or the Record ID / file row
 ``job``         the import's number as the Imports page shows it
 ``date``        a date or date-time column; birthday / anniversary also take month/day without a year
 ``bool``        a true/false column (consent)
@@ -22,7 +22,7 @@ kind            searched on
 ``service``     the service's name
 ``tag``         the tags the record is in (by name)
 ``file``        the imported file's name
-``imported``    when the import completed (a date)
+``created``     when the record was stored ("Record created", a date-time on the app's clock)
 ``issue``       why the record has no usable phone number ("Phone problem")
 ==============  ===========================================================================================
 """
@@ -50,8 +50,15 @@ class FindField:
     help: str = ""
 
 
+# The Find page shows these as boxes in every request, followed by one box per record field; everything else
+# (Any field, Full name, Tag, Import #, File name, File row, Phone problem, Column: …) is under "More criteria".
+# Business and service have pickers of their own on the page, so they aren't offered there either.
+FORM_KEYS = ["record", "created"]
+PICKER_KEYS = {"business", "service"}
+
+
 def find_fields(schema: TargetSchema, columns_seen: list[str]) -> list[FindField]:
-    """Every searchable field, in the order of the Field dropdown: common ones, record fields, import, columns."""
+    """Every searchable field: common ones, record fields, the record's ID and import, then the file columns."""
     out = [FindField("any", "Any field", "any", help="every value of the record, cleaned and as in the file"),
            FindField("business", "Business", "business", help="business ID (exact) or name"),
            FindField("service", "Service", "service")]
@@ -67,8 +74,9 @@ def find_fields(schema: TargetSchema, columns_seen: list[str]) -> list[FindField
             FindField("tag", "Tag", "tag", help="tag name; * = in any tag, = = in no tag"),
             FindField("import", "Import #", "job", help="the import's number on the Imports page"),
             FindField("file", "File name", "file"),
-            FindField("imported", "Imported on", "imported", datetime=True),
-            FindField("record", "Record #", "number", column="id"),
+            FindField("created", "Record created", "created", datetime=True,
+                      help="when the record was stored (its import), on the app's clock"),
+            FindField("record", "Record ID", "number", column="id", help="the record's own number"),
             FindField("row", "File row", "number", column="file_row")]
     out += [FindField(f"col:{c}", f"Column: {c}", "column", column=c, help="as written in the file")
             for c in columns_seen]
