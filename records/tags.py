@@ -44,7 +44,7 @@ from converter import normalizers as N
 from converter.output import write_output
 from converter.schema import FieldSpec, TargetSchema
 
-from .db import Database, column_type
+from .db import Database, column_type, date_only
 
 # Export columns that are always blank in a tag export (see the module docstring).
 ALWAYS_BLANK = {"consent"}
@@ -96,7 +96,9 @@ def export_table(db: Database, tag_id: int, schema: TargetSchema, export: Target
     for r in rows:
         target = r["first_visit_as"]
         if creation and target in rec_fields and r.get(target) is None and r.get(creation) is not None:
-            r[target] = r[creation]
+            v = r[creation]
+            # A date-only field (the last visit) takes the day of the creation date-time.
+            r[target] = v.date() if date_only(rec_fields[target]) and isinstance(v, datetime) else v
     by_number: dict[str, list[dict]] = {}
     for r in rows:
         by_number.setdefault(r["phone"], []).append(r)
