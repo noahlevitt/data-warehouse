@@ -1,0 +1,202 @@
+# ---------------------------------------------------------------------------
+# RECORD FIELDS — what Customer Records keeps of every row it imports
+#
+# Every row of an imported file becomes one record (one per file row, never merged across imports), tied to the
+# business and service chosen for the import. The fields below are cleaned and typed so they can be searched
+# (Find page); every column of the file, including the ones that feed no field here, is also kept as written
+# ("Other columns", searchable too).
+#
+# The same engine as the file converter reads these fields, so every rule documented in README.md applies: US
+# phone numbers only, the approved phone repairs (marked), dates in any format, 1600 for birthdays without a year,
+# consent and last_contacted only when a person maps them.
+#
+# Differences from the converter's import format (schemas/target_schema.yaml):
+#   - phone_number is not required: a row without a usable number is still a record (searchable by name, email…),
+#     with the reason on it; it is never exported in a tag.
+#   - no duplicate removal (dedupe keys empty): every file row is its own record.
+#   - names, email, address, visits, spend and the first-visit / sign-up date are kept.
+#
+# The database (PostgreSQL) gets one column per field, created when the app starts; adding a field here adds its
+# column. Renaming or retyping a field does not change an existing column (see docs/KNOWN_ISSUES.md).
+# Field names must be lowercase letters, digits and underscores. A tag exports into the converter's import format:
+# fields with the same name as an import-format field fill that column (see records/tags.py).
+# ---------------------------------------------------------------------------
+
+name: Customer records
+version: "1.0"
+description: One record per imported file row - names, phone numbers, email, address, visits, spend and dates.
+
+# Not used for records (they go to the database); required by the schema model.
+output:
+  format: csv
+
+# Every file row is its own record: nothing is removed as a duplicate. Duplicate numbers are merged in tag exports.
+dedupe:
+  keys: []
+
+fields:
+  # All of a row's numbers are kept (several phone columns, or several numbers in one cell); each is searchable.
+  - name: phone_number
+    header: Phone
+    type: phone
+    format: digits10
+    countries: [US, PR, VI, GU, AS, MP]
+    description: Customer's phone number(s), 10 digits
+    synonyms: [phone, phone number, mobile, mobile phone, mobile number, cell, cell phone, cell number,
+               telephone, tel, contact number, sms number, primary phone, customer phone, guest phone,
+               "phone #", "cell #", "mobile #", phone1, msisdn]
+
+  - name: first_name
+    header: First name
+    type: string
+    description: Customer's first (given) name
+    synonyms: [first, fname, given name, first nm, firstname]
+
+  - name: last_name
+    header: Last name
+    type: string
+    description: Customer's last (family) name
+    synonyms: [last, lname, surname, family name, last nm, lastname]
+
+  - name: email
+    header: Email
+    type: email
+    description: Customer's email address
+    synonyms: [email address, e-mail, e mail, mail, customer email, guest email, email1]
+
+  - name: address1
+    header: Address
+    type: string
+    description: Street address (line 1)
+    synonyms: [address, street, street address, address line 1, addr1, address 1, mailing address, home address]
+
+  - name: address2
+    header: Address 2
+    type: string
+    description: Apartment, suite or unit (address line 2)
+    synonyms: [address line 2, addr2, apt, suite, unit, apartment]
+
+  - name: city
+    header: City
+    type: string
+    description: City
+    synonyms: [town, municipality, locality]
+
+  - name: state
+    header: State
+    type: state
+    description: US state, 2-letter code
+    synonyms: [st, province, region, state code]
+
+  - name: zip
+    header: ZIP
+    type: zip
+    format: zip5
+    description: ZIP code, 5 digits
+    synonyms: [zip code, zipcode, postal code, postal, postcode, zip5]
+
+  - name: total_visits
+    header: Total visits
+    type: integer
+    description: Number of visits / orders
+    synonyms: [visits, visit count, number of visits, total orders, order count, number of orders, orders,
+               "# of visits", "# visits", times visited, visits count, total visit count, lifetime visits]
+
+  - name: total_spent
+    header: Total spent
+    type: decimal
+    description: Total amount spent
+    synonyms: [total spend, total spent, lifetime spend, lifetime spent, lifetime value, ltv, total sales,
+               amount spent, total amount spent, total revenue, lifetime revenue]
+
+  # Sign-up / creation date. Kept apart from the last-activity dates (creation_date: never counts as the file's
+  # last date). A tag export uses it as the last transaction (or last call, in a call log) only for imports that had
+  # no last-activity column at all - what the converter does with a creation date.
+  - name: first_visit
+    header: First visit / sign-up
+    type: datetime
+    format: "%m/%d/%Y %I:%M %p"
+    creation_date: true
+    description: When the customer first visited, signed up or was created in the client's system
+    synonyms: [first visit, first visit date, date created, created, created at, created date, creation date,
+               sign up date, signup date, signed up, sign up, join date, joined, date joined, member since,
+               customer since, registration date, registered, date added, enrolled, enrollment date]
+
+  # Activity dates: the same names and rules as the converter's import format, so a tag export fills them as is.
+  - name: transactions_last
+    header: Last visit / order
+    type: datetime
+    format: "%m/%d/%Y %I:%M %p"
+    description: When the customer last made a transaction / order / visit
+    synonyms: [last transaction, last transaction date, last order, last order date, last ordered,
+               last purchase, last purchase date, last visit, last visit date, last sale, recent order,
+               last check, last receipt, transactions last]
+    generic_date: default
+
+  - name: calls_last
+    header: Last call
+    type: datetime
+    format: "%m/%d/%Y %I:%M %p"
+    description: When the customer last called
+    synonyms: [last call, last called, last call date, last call time, last phone call, last inbound call,
+               call date, recent call, calls last]
+    generic_date: call_log
+
+  - name: in_sms_last
+    header: Last text received
+    type: datetime
+    format: "%m/%d/%Y %I:%M %p"
+    description: When the customer last sent an inbound text
+    synonyms: [last inbound sms, last sms received, last text received, last incoming text, last incoming sms,
+               last reply, last replied, last message received, last inbound message, in sms last]
+
+  - name: redemptions_last
+    header: Last redemption
+    type: datetime
+    format: "%m/%d/%Y %I:%M %p"
+    description: When the customer last redeemed an offer, coupon or reward
+    synonyms: [last redemption, last redemption date, last redeemed, last coupon redeemed, last reward redeemed,
+               last offer redeemed, last reward, redemption date, redemptions last]
+
+  - name: spin_last
+    header: Last spin
+    type: datetime
+    format: "%m/%d/%Y %I:%M %p"
+    description: When the customer last played spin-to-win
+    synonyms: [last spin, last spin date, spin date, last wheel spin, spin to win, last game played, spin last]
+
+  # Mapped by hand only, as in the converter: when we last texted the customer.
+  - name: last_contacted
+    header: Last contacted
+    type: datetime
+    format: "%m/%d/%Y %I:%M %p"
+    manual_only: true
+    description: When we last texted the customer. Only mapped by hand.
+    synonyms: [last contact, last contacted date, last message sent, last sms sent, last text sent,
+               last outreach, last campaign, last campaign sent, last messaged, date last contacted]
+
+  - name: birthday
+    header: Birthday
+    type: date
+    format: "%m/%d/%Y"
+    no_year_value: 1600
+    description: Birthday; month and day only is fine (year 1600 = no year)
+    synonyms: [birth date, birthdate, dob, date of birth, bday, b-day, birth day, birthday date]
+
+  - name: anniversary
+    header: Anniversary
+    type: date
+    format: "%m/%d/%Y"
+    no_year_value: 1600
+    description: Anniversary; month and day only is fine (year 1600 = no year)
+    synonyms: [anniversary date, wedding anniversary, anniv, wedding date]
+
+  # Mapped by hand only, as in the converter. Kept on the record as the file says; tag exports leave consent blank
+  # for now (the main system handles opt-outs per business).
+  - name: consent
+    header: Consent
+    type: boolean
+    true_value: "true"
+    false_value: "false"
+    manual_only: true
+    description: Consent as the file records it (true = opted in, false = opted out). Only mapped by hand.
