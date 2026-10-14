@@ -39,6 +39,11 @@ SYNTAX = """
 Leave a box empty to ignore it — **nothing is required**. A Find with everything blank shows every record. A range
 is written with three dots: `...` (`…` and `..` are read the same); either end may be left open.
 
+**`*` alone** in a box finds the records where that field has a value; **`=` alone** finds the records where it is
+blank. This works in every box: Phone `=` is no usable number, Tag `=` is in no tag, and a file's column `=` also
+finds records from files without that column. A value the import couldn't read (Visits `abc`) counts as blank.
+Typed with anything else, `*` and `=` keep their meanings below (`sm*th`, `=smith`).
+
 **Names**: First name and Last name work as text below. Some files give the whole name in their First Name column,
 kept as it is with no Last name ("Lisa Marie Ray"). First name and Last name also read such a name as split at its
 first space (first name Lisa, last name Marie Ray), or at its comma ("Ray, Lisa": last name Ray, first name Lisa):
