@@ -55,10 +55,10 @@ job's `read_options` has `records_import_id`. See KNOWN_ISSUES #1 for what that 
 | Module | Responsibility |
 |---|---|
 | `config.py` | `DATABASE_URL`, `RECORDS_SCHEMA_PATH`, `EXPORT_SCHEMA_PATH` (`.env` is loaded by `converter.config`). |
-| `db.py` | Connection pool (psycopg 3 + psycopg_pool); `ensure_database` (creates the database when allowed, with ICU case rules so Å = å); `Database.setup`: `pg_trgm`, the fixed tables, one column per record field (added when missing; a retyped field only warns), indexes (trigram for text, b-tree for the rest), and `collation` (None when the database folds accented letters; otherwise an explicit collation for finds, `_case_collation`); `check_fields` (names must be valid columns, one phone field). |
+| `db.py` | Connection pool (psycopg 3 + psycopg_pool); `ensure_database` (creates the database when allowed, with ICU case rules so Å = å); `Database.setup`: `pg_trgm`, the fixed tables, one column per record field (added when missing; a retyped field only warns, except a date-and-time field made `date_only`, converted to a date), indexes (trigram for text and the split parts of whole names, b-tree for the rest), and `collation` (None when the database folds accented letters; otherwise an explicit collation for finds, `_case_collation`); `check_fields` (names must be valid columns, one phone field). |
 | `store.py` | `RecordStore`: businesses, services, imports, records, tags; the rules of one business per tag, unique names, deletions only when unused, tag history. All SQL except finds and exports. |
 | `importer.py` | `RecordSink` (the runner's sink): `build_records` (engine audit → one record per file row, typed values, all numbers, the row as written minus skipped columns), `save` (one transaction: COPY records and numbers, complete the import), `discard`; `creation_fallback` (see Tag export). |
-| `fields.py` | What a find can search: the record fields plus Any field, Full name, Business, Service, Tag, Phone problem, Import #, File name, Record created, Record ID, File row, Column: …; which of them get a box on the Find page (`FORM_KEYS`) and which have pickers (`PICKER_KEYS`). |
+| `fields.py` | What a find can search: the record fields plus Any field, Full name, Business, Service, Tag, Phone problem, Import #, File name, Record created, Record ID, File row, Column: …; which have pickers instead (`PICKER_KEYS`). First and Last name are searched through `criteria.name_condition` (also the parts of a whole name kept in First name). |
 | `criteria.py` | One criterion → one SQL condition, per kind of field (text, phone, number, date, true/false, business, …), FileMaker syntax; values always as parameters; every condition `COALESCE(…, false)`. The module docstring is the syntax reference (also shown on the page). |
 | `find.py` | Requests (businesses, services, criteria; all optional) → found-set nodes (find, constrain, extend, omit records, show omitted, all, tag) → one SQL condition; counts, pages (sorts), CSV. |
 | `tags.py` | A tag's export: one row per unique number, filled by name from the record fields with the merge rules, written with the converter's writer; the file name. |
@@ -117,7 +117,10 @@ Foreign keys to `businesses` are `ON UPDATE CASCADE`, so a corrected business ID
 | Birthday month/day in any year; 1600 = no year | `criteria.date_token`, `_md_expr` |
 | Nothing required: a blank request is ignored, an all-blank find is every record | `find.Compiler.request` / `node` |
 | Ranges with an open end (`...X` up to and including X, `X...` from X on) | `criteria._range` and each kind's condition |
-| The requests are one form: typing doesn't rerun the page; Enter = Find (the form's first button) | `ui.page_find` |
+| The requests are one form: typing doesn't rerun the page; Enter = Find (the form's first button); the Add a field menu and ✕ are form buttons too, so typed values are kept | `ui.page_find`, `ui.find_layout` |
+| Which boxes a request shows (Business, Services, Last visit; Phone, First and Last name) and the Add a field menu's groups | `ui.find_layout` (from the record fields) |
+| Last visit is a date only: a date-and-time field whose format has no time; the converter maps, checks and converts it as a date and time, records keep the day; an old timestamp column is converted on start | `db.date_only`, `db.column_type`, `db.Database.setup`, `importer.typed_value`, `fields.find_fields` (`datetime`) |
+| First / Last name also read a whole name kept in First name (comma, else first space); indexes on both parts | `criteria.name_expr`, `criteria.name_condition`, `db.Database.setup` |
 | One business per tag; counts of left-out records | `store.add_to_tag` |
 | Export: one row per number; latest dates; birthday with a year; consent blank; creation date per import | `tags.export_table`, `ALWAYS_BLANK`, `_pick_date`; `importer.creation_fallback` |
 | No live formulas in the found-set CSV | `find.found_set_csv` (`neutralise_formula`) |
@@ -163,11 +166,11 @@ database. Without PostgreSQL those tests are skipped with a message; the convert
 
 | Test module | Covers |
 |---|---|
-| `test_records_import.py` | one record per row, all numbers, rows without numbers, every column, Skip, typed values, consent by hand only, repaired numbers, creation-date fallback, cancel/fail cleanup, same file, delete import, 20,000 rows |
+| `test_records_import.py` | one record per row, all numbers, rows without numbers, every column, Skip, typed values (the last visit as a day, mapped and checked as the converter does), consent by hand only, repaired numbers, creation-date fallback, cancel/fail cleanup, same file, delete import, 20,000 rows |
 | `test_records_find.py` | every criterion kind and operator, half ranges, FileMaker request order, Omit with empty fields, business and service pickers, blank requests and finds, Record created, constrain/extend/omit/show omitted, tags as found sets, messages, counts, CSV, sorting |
-| `test_records_find_edges.py` | the cases the independent test found: accented letters (ICU and C-locale databases), business ID vs names, times in dates, today's time zone, `+1 516*`, no-year birthdays, apostrophes and punctuation, backward ranges, `#12` |
+| `test_records_find_edges.py` | the cases the independent test found: accented letters (ICU and C-locale databases), business ID vs names, times in dates, today's time zone, `+1 516*`, no-year birthdays, apostrophes and punctuation, backward ranges, `#12`; 1.1.0 and 1.2.0 reviews (the date-only last visit, whole names in First name) |
 | `test_records_tags.py` | export format, one row per number, merge rules, consent blank, no-number records, creation date per import, file name, parity on the sample files |
-| `test_records_store.py` | businesses (IDs, corrections cascade), services, tags (one business, names, history), setup (repeatable, new fields, retyped fields, field names) |
-| `test_records_app.py` | the real app.py with AppTest: database errors, Businesses/Services, New import with business and service, import page, Find (boxes, pickers, an Omit request, More criteria, blank find, errors, omit selected), tag creation, tag export, Fields |
+| `test_records_store.py` | businesses (IDs, corrections cascade), services, tags (one business, names, history), setup (repeatable, new fields, retyped fields, field names, a last visit from 1.1.0 converted to a date) |
+| `test_records_app.py` | the real app.py with AppTest: database errors, Businesses/Services, New import with business and service, import page, Find (the shown boxes, Add a field and ✕, pickers, an Omit request, blank find, errors, omit selected), tag creation, tag export, Fields |
 
 Checks before a release: [HANDOFF.md](HANDOFF.md) → Checks.
