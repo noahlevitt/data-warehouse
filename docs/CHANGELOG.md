@@ -4,6 +4,14 @@ What changed in each version of Customer Records. The running version is shown i
 is tagged in git (`vX.Y.Z`). The history of the file converter this project is based on is in
 [converter/CHANGELOG.md](converter/CHANGELOG.md).
 
+## 1.2.1 — `*` and `=` alone in any box
+
+- **`*` alone** in a box finds the records where that field has a value, **`=` alone** the records where it is
+  blank, in every box (Phone `=`: no usable number; Tag `=`: in no tag; a file's column `=`: also records from
+  files without that column; a value the import couldn't read counts as blank). This already worked; it is now the
+  first rule under **How to search** and is tested for every field. Typed with anything else, `*` and `=` keep
+  their meanings (`sm*th`, `=smith`).
+
 ## 1.2.0 — the Find page laid out by what you search most
 
 - **Each request shows Business, Services and Last visit / order**, then **Phone, First name and Last name**. Every
