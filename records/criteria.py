@@ -39,6 +39,12 @@ SYNTAX = """
 Leave a box empty to ignore it — **nothing is required**. A Find with everything blank shows every record. A range
 is written with three dots: `...` (`…` and `..` are read the same); either end may be left open.
 
+**Names**: First name and Last name work as text below. Some files give the whole name in their First Name column,
+kept as it is with no Last name ("Lisa Marie Ray"). First name and Last name also read such a name as split at its
+first space (first name Lisa, last name Marie Ray), or at its comma ("Ray, Lisa": last name Ray, first name Lisa):
+First name `lisa` and Last name `ray` both find it. `=` and `*` look at the stored names only. **Full name** (under
+Add a field) searches first and last together: `lisa ray`.
+
 **Text** (names, email, address, city, Any field, file columns, Tag, File name)
 - `smith` — a word starting with "smith" (Smith, Smithson; not Goldsmith); upper/lower case never matters
 - `john smith` — both words, in any order · `=smith` — the whole word · `==john smith` — exactly the whole field
@@ -57,7 +63,8 @@ is written with three dots: `...` (`…` and `..` are read the same); either end
 - `5` · `>5` · `<=100` · `10...20` (both included) · `...20` (20 or less) · `10...` (10 or more)
 - `$1,200.50` and `#12` are fine · `=` empty · `*` any value
 
-**Dates** (last visit and the other activity dates, first visit, birthday, anniversary, Record created)
+**Dates** (last visit and the other activity dates, first visit, birthday, anniversary, Record created). The last
+visit is a date only: type days, never times.
 - `10/9/2026` — that day · `10/2026` — that month · `2026` — that year · `//` — today
 - `1/1/2025...1/1/2026` — from the first day through the last (both included)
 - `...1/1/2026` — up to and including that day · `1/1/2025...` — from that day on (also `...2025`, `10/2026...`)
@@ -100,6 +107,35 @@ class Params:
         name = f"p{len(self.values)}"
         self.values[name] = value
         return sql.Placeholder(name)
+
+
+# First and last name as searched. Some files give whole names in their First Name column, kept whole in First name
+# with no Last name ("Lisa Marie Ray" | ""). Such a name is also searched as if split: at a comma when it has one
+# ("Smith, John": last Smith, first John), otherwise at its first space (first Lisa, last Marie Ray). First name
+# matches the stored first name OR that first part; Last name the stored last name OR the rest. Records with a last
+# name are searched as they are; "=" (empty) and "*" (any value) are about the stored values only.
+def name_expr(part: str, table: str = "r.") -> sql.SQL:
+    """The split part ("first" or "last") of a whole name kept in First name, else NULL; ``table`` "" for an index
+    expression (records.db creates one per part)."""
+    first, last = f"btrim({table}first_name)", f"{table}last_name"
+    whole = f"coalesce({last}, '') = '' AND (strpos({first}, ',') > 0 OR strpos({first}, ' ') > 0)"
+    if part == "first":
+        split = (f"CASE WHEN strpos({first}, ',') > 0 THEN btrim(split_part({first}, ',', 2)) "
+                 f"ELSE split_part({first}, ' ', 1) END")
+    else:
+        split = (f"CASE WHEN strpos({first}, ',') > 0 THEN btrim(split_part({first}, ',', 1)) "
+                 f"ELSE btrim(substr({first}, strpos({first}, ' ') + 1)) END")
+    return sql.SQL(f"(CASE WHEN {whole} THEN {split} END)")
+
+
+def name_condition(part: str, text: str, p: "Params") -> sql.Composable:
+    """First or Last name: the stored value, or the split part of a whole name (see above)."""
+    stored = sql.SQL(f"r.{part}_name")
+    t = text.strip()
+    if t in ("=", "*"):
+        return text_condition(stored, t, p)
+    return sql.SQL("({} OR {})").format(_coalesce(text_condition(stored, t, p)),
+                                        _coalesce(text_condition(name_expr(part), t, p)))
 
 
 TRUE = sql.SQL("true")
@@ -554,6 +590,8 @@ def _condition(f: FindField, text: str, p: Params) -> sql.Composable:
         return bool_condition(col, t, p)
     if f.kind == "name":
         return text_condition(sql.SQL("concat_ws(' ', r.first_name, r.last_name)"), t, p)
+    if f.kind in ("first", "last"):
+        return name_condition(f.kind, t, p)
     if f.kind == "any":
         return text_condition(sql.SQL("r.search_text"), t, p)
     if f.kind == "column":
