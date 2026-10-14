@@ -6,7 +6,7 @@ column matching) are the file converter's, described in [converter/USER_GUIDE.md
 
 ## Opening it
 
-Open the address in a browser (on one computer: http://localhost:8501). There is no login for now. The menu on the
+Open the address in a browser (on one computer: http://localhost:8502). There is no login for now. The menu on the
 left has **Records** (Find, Tags, New import, Imports) and **Setup** (Businesses, Services, Templates, Fields).
 
 ## 1 · Set up businesses and services (once)
