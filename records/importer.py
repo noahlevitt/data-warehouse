@@ -50,7 +50,7 @@ from converter.mapping import Mapping, profile_columns
 from converter.schema import FieldSpec, TargetSchema
 from converter.storage import ImportRecord, Store
 
-from .db import column_type
+from .db import column_type, date_only
 from .store import RecordStore
 
 log = logging.getLogger(__name__)
@@ -63,14 +63,15 @@ def typed_value(f: FieldSpec, text: str):
     """The database value of field ``f`` for the engine's converted text (None when empty or unreadable).
 
     The engine writes dates as ``f.format`` (e.g. 09/12/1600, 10/09/2026 03:45 PM); they are read back with the
-    same pattern. Numbers come as plain decimal text ("1234.5"), true/false as the field's true/false values.
+    same pattern (a date-time field kept as a date only, records.db.date_only, becomes a date). Numbers come as
+    plain decimal text ("1234.5"), true/false as the field's true/false values.
     """
     if text is None or text == "":
         return None
     try:
         if f.type in ("date", "datetime"):
             dt = datetime.strptime(text, f.format) if f.format else datetime.fromisoformat(text)
-            return dt.date() if f.type == "date" else dt
+            return dt.date() if f.type == "date" or date_only(f) else dt
         if f.type == "integer":
             return int(text)
         if f.type == "decimal":
