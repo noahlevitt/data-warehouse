@@ -1,12 +1,14 @@
 # ---------------------------------------------------------------------------
-# Container image for the file converter (Streamlit web app + conversion engine).
+# Container image for Customer Records (Streamlit web app + the converter's conversion engine).
 #
-# Build and run with docker compose (see docker-compose.yml and README → "Running it"):
+# Build and run with docker compose (see docker-compose.yml and README → "Running it"), which also runs the
+# PostgreSQL database:
 #   docker compose up -d --build
 # The image holds the code only. Everything that must survive an update lives outside it:
-#   /app/data     users, templates, import history (SQLite) and each import's files   → mounted volume
-#   /app/schemas  the target import format (target_schema.yaml)                       → mounted read-only
-#   .env          settings and secrets (Claude API key, admin account)                → passed as env_file
+#   PostgreSQL    records, businesses, services, tags                                  → the "db" service's volume
+#   /app/data     users, templates, import jobs (SQLite) and each import's files      → mounted volume
+#   /app/schemas  record fields and export format (records_schema / target_schema)    → mounted read-only
+#   .env          settings and secrets (Claude API key, admin account, POSTGRES_PASSWORD) → passed as env_file
 # ---------------------------------------------------------------------------
 
 # Slim Debian image with Python 3.12 (small download, security updates from the official Python images).
