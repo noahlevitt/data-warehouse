@@ -156,10 +156,22 @@ class DatabaseError(RuntimeError):
     """The database can't be reached or set up; the message says what to do (shown on the page)."""
 
 
+# Directives of a date format that write a time; a date-time field whose format has none keeps the day only.
+_TIME_DIRECTIVES = ("%H", "%I", "%M", "%S", "%p", "%X", "%c", "%T", "%R", "%f")
+
+
+def date_only(f: FieldSpec) -> bool:
+    """A date-time field kept as a date: its format writes no time (the last visit, 1.2.0). The converter still
+    treats it as a date-time (mapping, checks, time zones); records store, show and search the day."""
+    return f.type == "datetime" and bool(f.format) and not any(d in f.format for d in _TIME_DIRECTIVES)
+
+
 def column_type(f: FieldSpec) -> str | None:
     """The PostgreSQL type of record field ``f``'s column, or None for a phone field (no column)."""
     if f.type == "phone":
         return None
+    if date_only(f):
+        return "date"
     return COLUMN_TYPES.get(f.type, "text")
 
 
@@ -276,6 +288,8 @@ class Database:
 
         Safe to run on every start (everything is IF NOT EXISTS). A field whose column already exists with another
         type is reported, not changed: retyping a column holding data is a decision for a person (KNOWN_ISSUES).
+        The one exception: a date-time field made :func:`date_only` (the last visit, 1.2.0; a decision by Noah) has
+        its date-and-time column converted to a date, keeping each value's day.
         """
         check_fields(schema)
         warnings: list[str] = []
@@ -302,6 +316,11 @@ class Database:
                     continue
                 if f.name in existing:
                     want = {"timestamp": "timestamp without time zone"}.get(ctype, ctype)
+                    if existing[f.name] == "timestamp without time zone" and want == "date" and date_only(f):
+                        c.execute(sql.SQL("ALTER TABLE records ALTER COLUMN {c} TYPE {t} USING {c}::{t}").format(
+                            c=sql.Identifier(f.name), t=sql.SQL(want)))
+                        log.info("Converted records.%s from %s to %s", f.name, existing[f.name], want)
+                        continue
                     if existing[f.name] != want:
                         mismatched.add(f.name)
                         warnings.append(f"Column '{f.name}' is {existing[f.name]} in the database but the field is "
@@ -321,6 +340,13 @@ class Database:
                 else:
                     c.execute(sql.SQL("CREATE INDEX IF NOT EXISTS {} ON records ({})").format(
                         index, sql.Identifier(f.name)))
+            if self.trigram and {"first_name", "last_name"} <= set(schema.field_names):
+                # First / Last name also search the split parts of a whole name kept in First name
+                # (records.criteria.name_expr); these indexes keep those finds fast.
+                from .criteria import name_expr
+                for part in ("first", "last"):
+                    c.execute(sql.SQL("CREATE INDEX IF NOT EXISTS {} ON records USING gin (({}) gin_trgm_ops)").format(
+                        sql.Identifier(f"records_{part}_name_split"), name_expr(part, table="")))
             if self.trigram:
                 c.execute("CREATE INDEX IF NOT EXISTS records_search ON records USING gin (search_text gin_trgm_ops)")
                 c.execute("CREATE INDEX IF NOT EXISTS record_phones_trgm ON record_phones USING gin "
