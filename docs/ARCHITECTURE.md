@@ -67,7 +67,9 @@ job's `read_options` has `records_import_id`. See KNOWN_ISSUES #1 for what that 
 `app.py` is the converter's app with Customer Records' changes: the business/service step and the duplicate-file
 warning on New import, `start_import` / `rerun_import` registering imports in PostgreSQL, `can_rerun` (no re-run while
 records are stored), business/service/records on the Imports pages, *Delete this import's records*, the Fields page,
-the navigation (Number history not shown) and the sidebar.
+the navigation (Number history not shown), the sidebar, and both mapping tables drawn at full height
+(`height="content"`, 1.0.2: they get a new key on every edit, so a table scrolled inside itself jumped back to
+its first row).
 
 ### Additions to the converter (`converter/`)
 
