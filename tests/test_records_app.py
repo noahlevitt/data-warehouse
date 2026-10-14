@@ -9,7 +9,6 @@ import os
 import textwrap
 import time
 
-import pandas as pd
 import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
@@ -164,6 +163,7 @@ def test_find_with_requests_and_tag_the_found_set(env):
 
 def test_find_shows_why_a_criterion_cant_be_read(env):
     at = run_page("Find")
+    at.button(key="fq_1_1_add_f:total_visits").click().run()
     by_label(at.text_input, "Total visits").input("lots")
     button(at, "Find").click().run()
     assert any("isn't a number" in e.value for e in at.error)
@@ -210,30 +210,34 @@ def test_a_typo_in_constrain_keeps_the_found_set(env):
     button(at, "Constrain").click().run()
     assert any("Fill in something to constrain" in w.value for w in at.warning)
     assert at.session_state["found"] == smith
-    by_label(at.text_input, "Total visits").input("lots")
+    by_label(at.text_input, "Last visit / order").input("someday")
     button(at, "Constrain").click().run()
-    assert any("isn't a number" in e.value and "unchanged" in e.value for e in at.error)
+    assert any("isn't a date" in e.value and "unchanged" in e.value for e in at.error)
     assert at.session_state["found"] == smith and [m.value for m in at.metric][0] == "1"
-    by_label(at.text_input, "Total visits").input("")
+    by_label(at.text_input, "Last visit / order").input("")
     by_label(at.text_input, "First name").input("john")
     button(at, "Constrain").click().run()
     assert not at.error and [m.value for m in at.metric][0] == "1"
 
 
-def test_a_more_criteria_row_needs_a_field(env):
-    req = {"id": 1, "omit": False, "base": pd.DataFrame({"Field": [None], "Criterion": ["promo"]})}
-    at = run_page("Find", state={"find_reqs": [req], "find_ver": 0, "find_seq": 1})
-    button(at, "Find").click().run()
-    assert any("choose a Field for 'promo'" in e.value for e in at.error)
-    assert "found" not in at.session_state
-
-
-def test_more_criteria_table(env):
-    """Fields without a box of their own (Full name, Any field, Tag, file columns…) are in the More criteria table."""
-    req = {"id": 1, "omit": False, "base": pd.DataFrame({"Field": ["Full name"], "Criterion": ["john smith"]})}
-    at = run_page("Find", state={"find_reqs": [req], "find_ver": 0, "find_seq": 1})
+def test_the_most_used_fields_are_shown_and_the_others_added(env):
+    """Business, Services and Last visit, then Phone, First and Last name; others from Add a field (and ✕ off)."""
+    at = run_page("Find")
+    assert [t.label for t in at.text_input][:4] == ["Last visit / order", "Phone", "First name", "Last name"]
+    assert not [t for t in at.text_input if t.label in ("City", "Record created", "Full name")]
+    by_label(at.text_input, "Last name").input("smith")
+    at.button(key="fq_1_1_add_name").click().run()                    # Full name, from the menu
+    assert by_label(at.text_input, "Last name").value == "smith"        # what was typed is kept
+    by_label(at.text_input, "Full name").input("john smith")
+    at.button(key="fq_1_1_add_created").click().run()                 # Record created, from the menu
+    assert [t.label for t in at.text_input][4:6] == ["Full name", "Record created"]
     button(at, "Find").click().run()
     assert [m.value for m in at.metric][0] == "1"
+    at.button(key="fq_1_1_drop_name").click().run()                   # ✕ takes it off again
+    assert not [t for t in at.text_input if t.label == "Full name"]
+    at.selectbox(key="fq_1_1_colpick").select("col:Last Visit")
+    at.button(key="fq_1_1_addcol").click().run()                      # a column of the files
+    assert [t for t in at.text_input if t.label == "Column: Last Visit"]
 
 
 def test_omit_selected_and_show_omitted(env):
