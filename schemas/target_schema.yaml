@@ -1,0 +1,161 @@
+# ---------------------------------------------------------------------------
+# TARGET SCHEMA — Generic import file format
+# Source: generic-import-format.md (provided 2026-10-09)
+#
+# Output rules from the spec:
+#   - Headers exactly as below: lowercase, in this order, no extra columns.
+#   - Keep every header even when the whole column is blank.
+#   - Blank cell when there is no value.
+#   - consent: true subscribes the consumer, false opts them out, blank changes nothing. Only filled when a person
+#     maps a column to it by hand (manual_only); otherwise blank.
+#   - phone_number: 10 digits only (area code + number), no +1, spaces, dashes or parentheses.
+#     A row without a phone number fails → rejected (bad row).
+#   - Activity columns: MM/DD/YYYY HH:MM AM/PM (12-hour, no seconds, no time zone).
+#   - birthday / anniversary: MM/DD/YYYY; month + day with no year → year 1600.
+#
+# Field attributes are documented in README.md ("Setting the target schema").
+#
+# How this file is used
+#   - Every part of the tool reads it: column matching (header + synonyms), the mapping grid, validation, the
+#     output file (headers, order, formats), the mistake checks and the instructions given to Claude.
+#   - Changing it needs no code change. In Docker the schemas/ folder is mounted, so edits are picked up on the
+#     next page load; with run_local.sh just reload the page.
+#   - Each import stores a copy of the schema it used, so old imports keep showing what they were converted with.
+#   - Run the tests after editing (python -m pytest -q): tests/test_real_schema.py pins the expected output.
+#
+# Field attributes used below
+#   name           internal id (used in templates, dedupe keys and the code); don't rename without care —
+#                  saved templates refer to fields by name
+#   header         exact column header written to the output file (order of the list = column order)
+#   type           phone | datetime | date | string | email | zip | state | integer | decimal | boolean | enum
+#   required       true → a row without a valid value is rejected (a "bad row")
+#   format         phone: digits10 = 10 digits; dates/times: a strftime pattern
+#   countries      phone: country codes that are accepted (anything else is rejected or repaired as a typo)
+#   no_year_value  date: the year written when the source has month + day only (or a placeholder year)
+#   fixed_blank    always empty in the output, whatever the file or mapping says; locked in the UI and for Claude
+#   description    shown in the app and given to Claude to explain the field
+#   synonyms       other header names that mean this field (the more, the better automatic matching)
+# ---------------------------------------------------------------------------
+
+# Shown in the app ("Target format: Generic import format v1.0") and stored with every import.
+name: Generic import format
+version: "1.0"
+description: Consumer import file — phone number, activity timestamps, birthday and anniversary.
+
+# How the converted file is written: a plain comma-separated UTF-8 CSV with a header row and "\n" line endings.
+# format can also be xlsx; quote_all: true puts every value in quotes.
+output:
+  format: csv
+  delimiter: ","
+  encoding: utf-8
+  include_header: true
+  quote_all: false
+  line_terminator: "\n"
+
+# A row is a duplicate only when EVERY column matches an earlier row
+# ("*" = all fields). Same phone with any different date → both rows import.
+dedupe:
+  keys: ["*"]
+  keep: first
+
+# The output columns, in order.
+fields:
+  # 10 digits, e.g. 5165550100. Several phone columns in a file → one row per different number.
+  - name: phone_number
+    header: phone_number
+    type: phone
+    required: true
+    format: digits10
+    # US numbers only (incl. US territories). No country code in the source → +1 is assumed.
+    countries: [US, PR, VI, GU, AS, MP]
+    description: Consumer's mobile number
+    synonyms: [phone, phone number, mobile, mobile phone, mobile number, cell, cell phone, cell number,
+               telephone, tel, contact number, sms number, primary phone, customer phone, guest phone,
+               "phone #", "cell #", "mobile #", phone1, msisdn]
+
+  # Mapped by hand only: the rules, templates and Claude never fill it. Values become true / false (Y/N, yes/no,
+  # opted in/out, subscribed/unsubscribed...); anything else is left blank, and a blank never changes anyone's
+  # consent. To lock it blank again, replace manual_only with fixed_blank: true.
+  - name: consent
+    header: consent
+    type: boolean
+    true_value: "true"
+    false_value: "false"
+    manual_only: true
+    description: true subscribes the consumer, false opts them out, blank changes nothing. Only mapped by hand.
+
+  # Activity times: MM/DD/YYYY HH:MM AM/PM. Times that include a zone (Z, UTC, EST, +00:00) or Unix timestamps
+  # are converted to the client time zone chosen on the New import page; times without a zone are kept as written.
+  # A date without a time becomes 12:00 AM.
+  - name: calls_last
+    header: calls_last
+    type: datetime
+    format: "%m/%d/%Y %I:%M %p"
+    description: When the consumer last called
+    synonyms: [last call, last called, last call date, last call time, last phone call, last inbound call,
+               call date, recent call, calls last]
+    # A date column named only "Date", "Start Time", "Timestamp"... goes here when the file looks like a call log.
+    generic_date: call_log
+
+  - name: transactions_last
+    header: transactions_last
+    type: datetime
+    format: "%m/%d/%Y %I:%M %p"
+    description: When the consumer last made a transaction / order / visit
+    synonyms: [last transaction, last transaction date, last order, last order date, last ordered,
+               last purchase, last purchase date, last visit, last visit date, last sale, recent order,
+               last check, last receipt, transactions last]
+    # A date column named only "Date", "Start Time", "Timestamp"... goes here in any other file.
+    generic_date: default
+
+  # Mapped by hand only: it means the last time WE texted the consumer, which imported files almost never contain,
+  # so the rules, templates and Claude never fill it.
+  - name: last_contacted
+    header: last_contacted
+    type: datetime
+    format: "%m/%d/%Y %I:%M %p"
+    manual_only: true
+    description: When we last texted the consumer. Only mapped by hand.
+    synonyms: [last contact, last contacted date, last message sent, last sms sent, last text sent,
+               last outreach, last campaign, last campaign sent, last messaged, date last contacted]
+
+  - name: in_sms_last
+    header: in_sms_last
+    type: datetime
+    format: "%m/%d/%Y %I:%M %p"
+    description: When the consumer last sent an inbound text
+    synonyms: [last inbound sms, last sms received, last text received, last incoming text, last incoming sms,
+               last reply, last replied, last message received, last inbound message, in sms last]
+
+  - name: redemptions_last
+    header: redemptions_last
+    type: datetime
+    format: "%m/%d/%Y %I:%M %p"
+    description: When the consumer last redeemed an offer, coupon or reward
+    synonyms: [last redemption, last redemption date, last redeemed, last coupon redeemed, last reward redeemed,
+               last offer redeemed, last reward, redemption date, redemptions last]
+
+  - name: spin_last
+    header: spin_last
+    type: datetime
+    format: "%m/%d/%Y %I:%M %p"
+    description: When the consumer last played spin-to-win
+    synonyms: [last spin, last spin date, spin date, last wheel spin, spin to win, last game played, spin last]
+
+  # Birthday / anniversary: MM/DD/YYYY. No real year (09/12, Sep 12, 0000/XXXX years, a year shared by most of the
+  # column, recent or future years) → year 1600, e.g. 09/12/1600. Month and day in separate columns are combined.
+  - name: birthday
+    header: birthday
+    type: date
+    format: "%m/%d/%Y"
+    no_year_value: 1600
+    description: Birthday; month and day only is fine
+    synonyms: [birth date, birthdate, dob, date of birth, bday, b-day, birth day, birthday date]
+
+  - name: anniversary
+    header: anniversary
+    type: date
+    format: "%m/%d/%Y"
+    no_year_value: 1600
+    description: Anniversary; month and day only is fine
+    synonyms: [anniversary date, wedding anniversary, anniv, wedding date]
