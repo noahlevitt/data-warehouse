@@ -1,5 +1,10 @@
 # Import File Converter
 
+> **In Customer Records:** this is the file converter's README (as of 0.21.2), kept as the reference for the
+> conversion rules Customer Records uses for every import (phone numbers, dates, column matching). Links to
+> `docs/…` point to the files next to this one. Customer Records itself is described in the
+> [README](../../README.md).
+
 Internal web app that converts any customer/contact file (CSV, TSV, TAB, TXT, XLSX, XLSM, XLSB, XLS, ODS) into
 the exact import format of the target system. Built for 5–20 internal users; each upload is one file.
 
