@@ -2,6 +2,9 @@
 # Reference: https://docs.streamlit.io/develop/api-reference/configuration/config.toml
 
 [server]
+# Customer Records' port: 8502, so the file converter can keep 8501 on the same computer. run_local.sh / .bat and
+# the Docker image pass it on the command line as well.
+port = 8502
 # Largest file that can be uploaded on the New import page.
 maxUploadSize = 200          # MB
 # Don't try to open a browser window on the server.
