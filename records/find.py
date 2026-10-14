@@ -1,0 +1,261 @@
+"""Find requests, the found set, and what is read from it (counts, pages of records, CSV).
+
+How a find works (FileMaker's rules)
+------------------------------------
+A find is a list of **requests**. Each request is a set of criteria, one per field (``records.criteria`` explains
+what can be typed); a record matches a request when it matches **every** criterion in it (AND). Requests are
+applied top to bottom: a normal request **adds** the records it matches to the found set (OR), an **Omit** request
+**removes** the records it matches from what the requests above it found. When the first request is an Omit, it
+removes from all records. Example: [Last name = smith] [Omit, City = brooklyn] [First name = ann] finds every
+Smith not in Brooklyn, plus every Ann (also an Ann in Brooklyn).
+
+On the found set: **Constrain** keeps only the records that also match new requests (AND), **Extend** adds the
+records matching new requests (OR), **Omit selected** takes chosen records out, **Show omitted only** swaps the
+found set for every other record, **Show all** finds everything. The found set is kept as a small tree of these
+steps (:data:`Node`, plain dicts, stored in the page state), never as a list of millions of ids, and is turned into
+one SQL condition each time it is shown (:func:`where`).
+
+**Limit to** (business, service) applies on top of everything, at all times: the found set, Show all and Show
+omitted only all stay inside the chosen businesses and services.
+"""
+
+from __future__ import annotations
+
+import csv
+import io
+from dataclasses import dataclass
+from datetime import date, datetime
+from typing import Any
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+from psycopg import sql
+
+from converter.output import neutralise_formula
+from converter.schema import TargetSchema
+
+from .criteria import FALSE, TRUE, CriterionError, Params, condition
+from .db import Database, column_type
+from .fields import FindField
+
+# A found-set node: {"t": "find", "requests": [...]}, {"t": "and"|"or", "parts": [n, n]}, {"t": "not", "part": n},
+# {"t": "all"}, {"t": "ids", "ids": [...]}, {"t": "tag", "id": n}. A request: {"omit": bool, "criteria":
+# [[field key, text], ...]}.
+Node = dict[str, Any]
+
+
+class FindError(ValueError):
+    """The find can't run as typed (no criteria, or a criterion that can't be read); shown to the person."""
+
+
+def find_node(requests: list[dict]) -> Node:
+    """A new found set from find requests (checked: at least one criterion)."""
+    if not any(text.strip() for r in requests for _, text in r.get("criteria", []) if text):
+        raise FindError("Type at least one criterion in a request.")
+    return {"t": "find", "requests": requests}
+
+
+def constrain(prev: Node, requests: list[dict]) -> Node:
+    """The found set narrowed by new requests (records must match both)."""
+    return {"t": "and", "parts": [prev, find_node(requests)]}
+
+
+def extend(prev: Node, requests: list[dict]) -> Node:
+    """The found set plus the records new requests find."""
+    return {"t": "or", "parts": [prev, find_node(requests)]}
+
+
+def omit_records(prev: Node, ids: list[int]) -> Node:
+    """The found set without these records."""
+    return {"t": "and", "parts": [prev, {"t": "not", "part": {"t": "ids", "ids": [int(i) for i in ids]}}]}
+
+
+def show_omitted(prev: Node) -> Node:
+    """Every record (within Limit to) that isn't in the found set."""
+    return {"t": "not", "part": prev}
+
+
+def all_records() -> Node:
+    """Every record (within Limit to)."""
+    return {"t": "all"}
+
+
+def tag_records(tag_id: int) -> Node:
+    """The records of a tag."""
+    return {"t": "tag", "id": int(tag_id)}
+
+
+@dataclass
+class Compiler:
+    """Turns nodes into SQL conditions on ``records r`` with one shared set of parameters.
+
+    ``today`` defaults to today's date in ``timezone`` (the app's), not the server's clock: ``//`` means the same
+    day for the person searching wherever the server runs. ``collation`` is records.db.Database.collation.
+    """
+
+    fields: dict[str, FindField]
+    timezone: str = "America/New_York"
+    today: date | None = None
+    collation: str | None = None
+
+    def __post_init__(self) -> None:
+        today = self.today or datetime.now(ZoneInfo(self.timezone)).date()
+        self.p = Params(self.collation, self.timezone, today)
+
+    def request(self, req: dict) -> sql.Composable | None:
+        """A request's criteria ANDed, or None when it has none."""
+        parts = []
+        for key, text in req.get("criteria", []):
+            if not (text or "").strip():
+                continue
+            f = self.fields.get(key)
+            if f is None:
+                raise FindError(f"The field '{key.split(':', 1)[-1]}' isn't searchable any more; remove it.")
+            try:
+                parts.append(condition(f, text, self.p))
+            except CriterionError as exc:
+                raise FindError(str(exc)) from None
+        if not parts:
+            return None
+        return sql.SQL("(") + sql.SQL(" AND ").join(parts) + sql.SQL(")")
+
+    def node(self, n: Node) -> sql.Composable:
+        """One node (see :data:`Node`)."""
+        t = n["t"]
+        if t == "all":
+            return TRUE
+        if t == "find":
+            expr: sql.Composable | None = None
+            for req in n["requests"]:
+                c = self.request(req)
+                if c is None:
+                    continue
+                omit = bool(req.get("omit"))
+                if expr is None:
+                    expr = TRUE if omit else FALSE
+                expr = (sql.SQL("({} AND NOT {})") if omit else sql.SQL("({} OR {})")).format(expr, c)
+            if expr is None:
+                raise FindError("Type at least one criterion in a request.")
+            return expr
+        if t in ("and", "or"):
+            return sql.SQL("(") + sql.SQL(f" {t.upper()} ").join(self.node(x) for x in n["parts"]) + sql.SQL(")")
+        if t == "not":
+            return sql.SQL("NOT {}").format(self.node(n["part"]))
+        if t == "ids":
+            return sql.SQL("r.id = ANY({})").format(self.p(list(n["ids"]))) if n["ids"] else FALSE
+        if t == "tag":
+            return sql.SQL("EXISTS (SELECT 1 FROM tag_records x WHERE x.record_id = r.id AND x.tag_id = {})").format(
+                self.p(int(n["id"])))
+        raise FindError(f"Unknown found-set step '{t}'.")
+
+
+def where(node: Node, fields: list[FindField], businesses: list[str] | None = None,
+          services: list[int] | None = None, timezone: str = "America/New_York",
+          today: date | None = None, collation: str | None = None) -> tuple[sql.Composable, dict]:
+    """The found set as (SQL condition on ``records r``, parameters), with Limit to applied.
+
+    ``collation``: pass the database's (records.db.Database.collation) so upper/lower case of accented letters match.
+    Raises :class:`FindError` (with a message for the page) when a criterion can't be read.
+    """
+    comp = Compiler({f.key: f for f in fields}, timezone, today, collation)
+    parts = [comp.node(node)]
+    if businesses:
+        parts.append(sql.SQL("r.business_id = ANY({})").format(comp.p(list(businesses))))
+    if services:
+        parts.append(sql.SQL("r.service_id = ANY({})").format(comp.p([int(s) for s in services])))
+    return sql.SQL("(") + sql.SQL(" AND ").join(parts) + sql.SQL(")"), comp.p.values
+
+
+def counts(db: Database, cond: sql.Composable, params: dict) -> dict:
+    """{"records", "numbers" (unique usable phone numbers), "no_phone", "businesses"} of the found set."""
+    row = db.fetch_one(sql.SQL("""
+        SELECT count(*) AS records,
+               count(*) FILTER (WHERE r.phone_issue <> '') AS no_phone,
+               count(DISTINCT r.business_id) AS businesses
+        FROM records r WHERE {}""").format(cond), params)
+    row["numbers"] = db.fetch_one(sql.SQL("""
+        SELECT count(DISTINCT rp.phone) AS n FROM record_phones rp JOIN records r ON r.id = rp.record_id
+        WHERE {}""").format(cond), params)["n"]
+    return row
+
+
+# Sort choices of the found-set table: label → (ORDER BY, record fields it needs). Every order ends on r.id so
+# pages never overlap.
+SORTS = {
+    "Import order": ("r.id", set()),
+    "Last name": ("lower(r.last_name) NULLS LAST, lower(r.first_name) NULLS LAST, r.id", {"last_name", "first_name"}),
+    "First name": ("lower(r.first_name) NULLS LAST, lower(r.last_name) NULLS LAST, r.id", {"last_name", "first_name"}),
+    "Last visit (newest first)": ("r.transactions_last DESC NULLS LAST, r.id", {"transactions_last"}),
+    "Total spent (highest first)": ("r.total_spent DESC NULLS LAST, r.id", {"total_spent"}),
+    "Total visits (most first)": ("r.total_visits DESC NULLS LAST, r.id", {"total_visits"}),
+    "Business": ("r.business_id, r.id", set()),
+}
+
+
+def available_sorts(schema: TargetSchema) -> list[str]:
+    """The sort choices whose fields exist in the record fields."""
+    return [label for label, (_, need) in SORTS.items() if need <= set(schema.field_names)]
+
+
+def page(db: Database, schema: TargetSchema, cond: sql.Composable, params: dict, sort: str = "Import order",
+         limit: int = 100, offset: int = 0) -> list[dict]:
+    """One page of the found set: record #, business, service, import, file row, phones, problem, every field."""
+    fields = [f for f in schema.fields if column_type(f) is not None]
+    order_sql = SORTS.get(sort, SORTS["Import order"])[0]
+    return db.fetch(sql.SQL("""
+        SELECT r.id, r.business_id, b.name AS business_name, s.name AS service_name, i.job_id AS import_no,
+               r.file_row,
+               (SELECT string_agg(rp.phone, ', ' ORDER BY rp.position) FROM record_phones rp
+                 WHERE rp.record_id = r.id) AS phones,
+               r.phone_issue, {fields}
+        FROM records r JOIN businesses b ON b.id = r.business_id JOIN services s ON s.id = r.service_id
+        JOIN imports i ON i.id = r.import_id
+        WHERE {cond} ORDER BY {order} LIMIT {limit} OFFSET {offset}""").format(
+        fields=sql.SQL(", ").join(sql.SQL("r.{}").format(sql.Identifier(f.name)) for f in fields),
+        cond=cond, order=sql.SQL(order_sql), limit=sql.Literal(int(limit)), offset=sql.Literal(int(offset))), params)
+
+
+def _cell(v) -> str:
+    """A database value as CSV text (dates as MM/DD/YYYY, date-times with the time)."""
+    if v is None:
+        return ""
+    if hasattr(v, "hour"):
+        return v.strftime("%m/%d/%Y %I:%M %p")
+    if hasattr(v, "strftime"):
+        return v.strftime("%m/%d/%Y")
+    return str(v)
+
+
+def found_set_csv(db: Database, schema: TargetSchema, cond: sql.Composable, params: dict,
+                  sort: str = "Import order") -> bytes:
+    """The whole found set as CSV (UTF-8 with BOM, for Excel): record and import details, numbers, every field.
+
+    Cells that a spreadsheet would run as a formula get a leading apostrophe (converter.output.neutralise_formula).
+    """
+    fields = [f for f in schema.fields if column_type(f) is not None]
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["Record #", "Business ID", "Business", "Service", "Import #", "File row", "Phones",
+                "Phone problem"] + [f.header for f in fields])
+    offset, chunk = 0, 5000
+    while True:
+        rows = page(db, schema, cond, params, sort, limit=chunk, offset=offset)
+        for r in rows:
+            w.writerow([neutralise_formula(_cell(x)) for x in
+                        [r["id"], r["business_id"], r["business_name"], r["service_name"], r["import_no"],
+                         r["file_row"], r["phones"], r["phone_issue"]] + [r[f.name] for f in fields]])
+        if len(rows) < chunk:
+            break
+        offset += chunk
+    return buf.getvalue().encode("utf-8-sig")
+
+
+def page_frame(rows: list[dict], schema: TargetSchema, show: list[str]) -> pd.DataFrame:
+    """The found-set page as a table for the screen: fixed columns first, then the chosen fields (by name)."""
+    heads = {f.name: f.header for f in schema.fields}
+    table = pd.DataFrame([{
+        "Record #": r["id"], "Business": f"{r['business_id']} · {r['business_name']}", "Service": r["service_name"],
+        "Phones": r["phones"] or "", **{heads[k]: _cell(r.get(k)) for k in show if k in heads and k in r},
+        "Phone problem": r["phone_issue"], "Import #": r["import_no"], "Row": r["file_row"],
+    } for r in rows])
+    return table
