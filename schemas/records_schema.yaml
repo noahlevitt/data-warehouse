@@ -15,9 +15,12 @@
 #     with the reason on it; it is never exported in a tag.
 #   - no duplicate removal (dedupe keys empty): every file row is its own record.
 #   - names, email, address, visits, spend and the first-visit / sign-up date are kept.
+#   - transactions_last (the last visit) keeps the day only: its format has no time.
 #
 # The database (PostgreSQL) gets one column per field, created when the app starts; adding a field here adds its
-# column. Renaming or retyping a field does not change an existing column (see docs/KNOWN_ISSUES.md).
+# column. Renaming or retyping a field does not change an existing column (see docs/KNOWN_ISSUES.md #2), with one
+# exception: a datetime field whose format has no time is stored as a date, and an existing date-and-time column of
+# it is converted to a date on start, keeping each day (records.db.date_only).
 # Field names must be lowercase letters, digits and underscores. A tag exports into the converter's import format:
 # fields with the same name as an import-format field fill that column (see records/tags.py).
 # ---------------------------------------------------------------------------
@@ -123,10 +126,13 @@ fields:
                customer since, registration date, registered, date added, enrolled, enrollment date]
 
   # Activity dates: the same names and rules as the converter's import format, so a tag export fills them as is.
+  # A date only (decided 2026-10-14): searched and shown by the day. It stays a datetime field, so the converter
+  # maps, checks and converts time zones exactly as for the import format; its format has no time, so the day (on
+  # the client's clock) is what is kept (records.db.date_only). Tag exports write it at 12:00 AM.
   - name: transactions_last
     header: Last visit / order
     type: datetime
-    format: "%m/%d/%Y %I:%M %p"
+    format: "%m/%d/%Y"
     description: When the customer last made a transaction / order / visit
     synonyms: [last transaction, last transaction date, last order, last order date, last ordered,
                last purchase, last purchase date, last visit, last visit date, last sale, recent order,
