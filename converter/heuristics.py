@@ -1,0 +1,962 @@
+"""Rule-based auto-mapping: header names + synonyms + value-type evidence. Runs before (or without) Claude.
+
+Overview
+--------
+Given the target schema and a :class:`~converter.mapping.ColumnProfile` per source column (header name, fill
+counts, sample values and the share of values that look like a phone / email / date / ZIP / state), this
+module proposes a first :class:`~converter.mapping.Mapping` without any AI call. The result is a starting
+point: ``services.initial_mapping`` normalises it, may overlay a similar saved template, may let Claude refine
+it, and the reviewer can then change anything in the web UI.
+
+Responsibilities
+    * Score how well a source column fits a target field (:func:`header_score` for the header text,
+      :func:`score` for header + value-type evidence).
+    * Recognise columns that must be treated specially: consent / opt-in columns (never mapped,
+      :func:`is_consent_column`) and phone columns vs. columns that only describe a phone
+      (:func:`is_phone_header`, :func:`enough_evidence`).
+    * Build the mapping in :func:`auto_map` in ordered steps (direct matches, phone columns, area code columns
+      next to 7-digit numbers, email by values, full-name split, full-address split, birthday/anniversary split
+      over month/day columns).
+
+Main entry points
+    * :func:`auto_map` - used by ``services.initial_mapping``.
+    * :data:`TYPED`, :func:`header_score`, :func:`is_consent_column`, :func:`is_phone_header` - also used by
+      ``checks.py`` to warn about values that were typed into the wrong column.
+
+Data flow
+    ``reader.read_file`` -> DataFrame -> ``mapping.profile_columns`` -> ``auto_map(schema, profiles, df)`` (the
+    DataFrame only for area code columns) -> ``Mapping`` -> ``Mapping.normalized(...)`` -> (template / Claude /
+    reviewer edits) -> ``engine.convert``.
+
+Every rule-made :class:`~converter.mapping.FieldMapping` gets ``origin="rule"``, a confidence
+(high / medium / low) and a human-readable ``reason`` that the review grid shows next to the field.
+"""
+
+from __future__ import annotations
+
+import re
+from collections import Counter
+from typing import TYPE_CHECKING, Iterator
+
+from rapidfuzz import fuzz
+
+from . import normalizers as N
+from .mapping import (ColumnProfile, FieldMapping, Mapping, area_code_pairs, is_area_code_header, is_fax_column,
+                      norm_header)
+from .schema import FieldSpec, TargetSchema
+
+if TYPE_CHECKING:
+    import pandas as pd
+
+# Schema field type -> key in ColumnProfile.shares that gives value-type evidence for it. A "datetime" field is
+# supported by date-looking values. Field types missing here (string, integer, decimal, boolean, enum) are
+# matched on the header alone, because their values don't have a recognisable shape.
+TYPED = {"phone": "phone", "email": "email", "date": "date", "datetime": "date", "zip": "zip", "state": "state"}
+# Normalised headers (see norm_header: lower-case, letters/digits only) of a column that holds a person's WHOLE
+# name, e.g. "Customer Name" -> "customername". Step 4 of auto_map splits such a column into first/last name.
+FULL_NAME_HEADERS = {"name", "fullname", "customername", "customer", "contactname", "contact", "guestname", "guest",
+                     "clientname", "client", "membername", "member", "patronname", "subscribername", "subscriber",
+                     "recipientname", "recipient", "displayname", "nombre"}
+# Normalised headers of a single-line address column ("Mailing Address" -> "mailingaddress"). Step 5 of auto_map
+# only looks at these when the street field is still unmapped, and the values must also look like full addresses.
+FULL_ADDRESS_HEADERS = {"address", "fulladdress", "mailingaddress", "streetaddress", "homeaddress", "deliveryaddress",
+                        "billingaddress", "shippingaddress", "customeraddress", "addr"}
+# Substrings of a (lower-cased) column name that mark a mobile number. When several phone columns feed one field,
+# these columns are listed first, so the mobile number is the contact's first output row (the target is SMS).
+MOBILE_HINTS = ("mobile", "cell", "sms", "text", "wireless")
+# Words that carry no meaning on their own in a header. _core() drops them so that "Last Visit Date" and
+# "visit" are compared on "visit" only, and "Join Date" doesn't look like "Spin Date" just because of "Date".
+FILLER_WORDS = {"date", "time", "datetime", "timestamp", "dt", "last", "latest", "recent", "most", "at", "on", "of",
+                "the", "a", "an", "and", "when", "day"}
+# Consent / subscription columns are never auto-mapped: consent must not be derived from source files.
+# (The import format keeps its consent column blank on purpose - a value there would subscribe or opt out people.)
+# A column such as "SMS Opt In" or "Subscribed" is also never taken as a phone, date or other field: score()
+# returns 0 for it and the phone / email steps skip it. Matched as whole header words (see _words).
+CONSENT_WORDS = {"opt", "optin", "optout", "opted", "consent", "consented", "subscribe", "subscribed", "subscriber",
+                 "subscription", "unsubscribe", "unsubscribed", "stop", "stopped", "dnd", "dnc", "tcpa", "permission"}
+# Headers too vague to match a field on their own (a column called "Date" could be any date field).
+# header_score() gives such a header 100 only when it is literally a name/synonym of the field, otherwise 0 -
+# no fuzzy or partial matching.
+GENERIC_HEADERS = {"date", "time", "datetime", "timestamp", "created", "createdat", "updated", "updatedat", "name",
+                   "number", "value", "status", "type", "notes", "last", "other", "info", "data"}
+
+# Header words that say "this is a phone column". "number"/"no"/"#" count only without a non-phone word next to it.
+# ("#" itself is dropped by _words, so "Cell #" is just ["cell"] and "Account #" is just ["account"].)
+PHONE_WORDS = {"phone", "phones", "phonenumber", "mobile", "cell", "cellphone", "cellular", "tel", "telephone", "ph",
+               "sms", "text", "texting", "whatsapp", "wireless", "landline", "contact", "msisdn"}
+# Words that turn a phone header into a header ABOUT the phone (a setting or label), not the number itself:
+# "phone4MarketingPreference", "Phone Type", "SMS Opt In", "Phone Verified", "Phone Ext", and texting activity
+# such as "Last SMS Received", "SMS Last", "Last Text Sent" (dates, often empty in a file).
+# One of these words anywhere in the header is enough: is_phone_header() then says False, and step 2 of auto_map
+# never adds a column that mentions a phone word but isn't a phone header (step 1 scores columns by header and
+# values, so such a column full of phone-like values could still be matched there). Fax columns are never phone
+# columns at all (mapping.is_fax_column): a fax line can't receive texts.
+PHONE_ATTRIBUTE_WORDS = {"preference", "preferences", "pref", "prefs", "marketing", "type", "kind", "label", "status",
+                         "verified", "verification", "valid", "validated", "confirmed", "consent", "opt", "optin",
+                         "optout", "opted", "ext", "extension", "country", "countrycode", "code", "carrier", "flag",
+                         "enabled", "disabled", "allowed", "allow", "permission", "subscribed", "unsubscribed",
+                         "source", "date", "time", "updated", "created", "count", "is", "has", "can", "ok", "fax",
+                         "notes", "note", "comment", "comments", "last", "latest", "recent", "first", "received",
+                         "sent", "delivered", "timestamp", "datetime"}
+# "Number"-like words: a short header made of one of these (plus at most one other word) is a phone header, e.g.
+# "Contact Number" is caught by "contact" anyway, but "Primary No" or "Number 2" only by this rule.
+NUMBER_WORDS = {"number", "num", "no", "nbr", "numbers"}
+# Words that make "number" mean some other number: "Order Number", "Member No", "Account #", "Zip Code Number".
+# Only checked for the NUMBER_WORDS rule; an explicit phone word ("Customer Phone") still wins.
+NOT_PHONE_WORDS = {"order", "account", "acct", "id", "member", "card", "invoice", "ticket", "zip", "postal", "store",
+                   "location", "receipt", "check", "transaction", "customer", "loyalty", "reference", "ref", "employee",
+                   "table", "party", "guest", "visit", "visits", "points", "count", "fax"}
+
+# Generic date columns (step 7 of auto_map). Header words of a creation-type date: when the customer or record was
+# created, signed up, joined or first visited. Not a last activity, so only used when the file has no other date
+# ("better a creation date than no date at all"), and never together with a real last date.
+CREATION_DATE_WORDS = {"created", "creation", "create", "signup", "signed", "sign", "joined", "join", "registered",
+                       "registration", "enrolled", "enrollment", "since", "first", "added", "add", "imported",
+                       "import", "uploaded", "upload"}
+# Header words of a date ABOUT a birthday or anniversary rather than the date itself: "Birthday Reward Sent",
+# "Birthday Email Date", "Anniversary Coupon Redeemed". Such a column never feeds a birthday/anniversary field (it
+# would put the day the reward went out in place of the birthday). Checked by score() for "date" fields.
+DATE_EVENT_WORDS = {"sent", "send", "reward", "rewards", "email", "emailed", "text", "texted", "sms", "message",
+                    "coupon", "offer", "promo", "promotion", "redeemed", "redemption", "redeem", "campaign",
+                    "reminder", "notification", "notified", "gift", "discount", "points", "bonus", "club", "voucher"}
+# Header words of dates that are never a last activity, not even as a fallback: birthdays and anniversaries (their
+# own fields), expiry and due dates, opt-in / consent dates.
+NEVER_ACTIVITY_DATE_WORDS = {"birth", "birthday", "bday", "dob", "born", "anniversary", "anniv", "wedding", "expires",
+                             "expire", "expiration", "expiry", "exp", "due", "opt", "optin", "consent", "subscribed",
+                             "unsubscribed"}
+# Header words that show a file is a call log (calls / phone-system export): its date column is the call's date.
+# Consent columns don't count ("Do Not Call", "Call Opt In"), nor does "duration" next to other words ("Membership
+# Duration") or "extension" next to a phone word ("Phone Extension"): see _call_log_header.
+CALL_LOG_WORDS = {"call", "calls", "caller", "callerid", "dialed", "dialled", "duration", "direction", "inbound",
+                  "outbound", "incoming", "outgoing", "missed", "voicemail", "answered", "ringing", "extension"}
+# The words a call-length header is made of: "Duration", "Call Duration", "Talk Time (sec)", "Duration Mins".
+_DURATION_HEADER_WORDS = {"duration", "call", "talk", "ring", "time", "length", "total", "sec", "secs", "seconds",
+                          "s", "min", "mins", "minutes", "hh", "mm", "ss", "in"}
+# A date's time that is just midnight at the end of the value: "2026-03-15 00:00:00", "… 00:00", "…T00:00:00.000".
+_MIDNIGHT_RE = re.compile(r"[ t]00:00(?::00(?:\.0+)?)?$", re.I)
+# A time of day on its own ("3:15 PM", "15:15:00"): a separate Time column next to a Date column.
+_TIME_ONLY_RE = re.compile(r"^\s*\d{1,2}:\d{2}(:\d{2})?\s*([ap]\.?m\.?)?\s*$", re.I)
+
+# A value that looks like a complete one-line address. Two alternatives:
+#   1. a comma somewhere, and a 5-digit ZIP (or ZIP+4) at the very end: "12 Main St, Springfield, NJ 07081"
+#   2. a comma, a city-like run of letters/spaces/dots, an optional comma and a 2-letter UPPER-CASE state word:
+#      "12 Main St, Springfield NJ" or "12 Main St, Springfield, NJ"
+# A plain street line ("12 Main St") matches neither, so an ordinary "Address" column is not parsed.
+_FULL_ADDR_RE = re.compile(r",.*\b\d{5}(?:-\d{4})?\s*$|,\s*[A-Za-z .]+,?\s+[A-Z]{2}\b")
+
+
+def _words(text: str) -> list[str]:
+    """Split a header into lower-case words, also at camelCase, ACRONYM and letter/digit boundaries.
+
+    Exports name columns in every style, so "phone4MarketingPreference", "SMSOptIn", "Phone 4" and "phone_4" must
+    all yield comparable words. Everything that isn't a letter or digit separates words and is dropped.
+
+    Examples::
+
+        _words("phone4MarketingPreference") -> ["phone", "4", "marketing", "preference"]
+        _words("SMSOptIn")                  -> ["sms", "opt", "in"]
+        _words("Cell #")                    -> ["cell"]
+        _words("WhatsApp")                  -> ["whatsapp"]
+    """
+    text = re.sub(r"(?i)whats\s*app", "whatsapp", text)  # one word, though written "WhatsApp" (not whats + app)
+    text = re.sub(r"([a-z])([A-Z])", r"\1 \2", text)  # camelCase → camel Case
+    text = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", text)  # SMSOptIn → SMS OptIn
+    text = re.sub(r"([A-Za-z])(\d)", r"\1 \2", text)  # phone4 → phone 4
+    text = re.sub(r"(\d)([A-Za-z])", r"\1 \2", text)  # 4Marketing → 4 Marketing
+    # Lower-case, then split on anything that isn't a-z / 0-9 and drop the empty pieces.
+    return [w for w in re.split(r"[^a-z0-9]+", text.lower()) if w]
+
+
+def _core(text: str) -> str:
+    """Header without words that carry no meaning on their own ("date", "last", "time"…).
+
+    The remaining words are joined without separators so they compare like :func:`norm_header` output.
+
+    Examples::
+
+        _core("Last Visit Date") -> "visit"
+        _core("spin_last")       -> "spin"
+        _core("Date")            -> ""      (nothing meaningful left)
+
+    Used by :func:`header_score` so that two headers that differ only in filler words still match, and so that
+    fuzzy similarity is measured on the meaningful part only.
+    """
+    return "".join(w for w in _words(text) if w not in FILLER_WORDS)
+
+
+def _candidates(f: FieldSpec) -> list[str]:
+    """All names a source header may match for field ``f``, in order and without duplicates.
+
+    That is the internal field name, the output header, the name with spaces instead of underscores, and every
+    synonym from the schema. Example for ``phone_number``: ``["phone_number", "phone number", "phone", "mobile",
+    ...]`` (the header "phone_number" equals the name and is dropped as a duplicate).
+    """
+    names = [f.name, f.header, f.name.replace("_", " "), *f.synonyms]
+    # dict.fromkeys keeps the first occurrence of each name and preserves order.
+    return list(dict.fromkeys(names))
+
+
+def is_consent_column(column: str) -> bool:
+    """True when the column holds consent / subscription / marketing-permission data.
+
+    Such columns are never auto-mapped to anything (consent must not be derived from source files), and are not
+    phone, date or email columns even when their values look like it.
+
+    Matches when the header contains a CONSENT_WORDS word ("SMS Opt In", "Subscribed", "TCPA"), when its
+    normalised form contains "optin" / "optout" / "donot" ("OPTIN_FLAG", "Do Not Text", "DoNotCall"), or when it
+    is a yes/no marketing permission ("phone4MarketingPreference", "SMS Marketing Allowed", "Marketing OK").
+    A plain "Marketing Source" or "Marketing Channel" is not a consent column.
+    """
+    words = set(_words(column))
+    if words & CONSENT_WORDS or any(k in norm_header(column) for k in ("optin", "optout", "donot")):
+        return True
+    # "phone4MarketingPreference", "SMS Marketing Allowed", "Marketing OK": a yes/no marketing permission.
+    return "marketing" in words and bool(words & {"preference", "preferences", "pref", "prefs", "allowed", "allow",
+                                                  "ok", "permission", "enabled", "accepted", "agreed", "status"})
+
+
+def is_phone_header(column: str) -> bool:
+    """True when the column name itself says it holds phone numbers ("Mobile", "Cell #", "Contact Number").
+
+    Rules, in order:
+
+    1. A header about the phone rather than the number ("Phone Type", "phoneVerified", "Phone Ext",
+       "phone4MarketingPreference", "Last SMS Received"), a fax column ("Fax", "Phone/Fax") or any consent column
+       -> False.
+    2. A phone word ("phone", "mobile", "cell", "tel", "sms", ...) -> True ("Home Phone", "Tel.", "SMS Number").
+    3. A "number" word in a short header (at most 2 words) without a word that names another kind of number ->
+       True ("Phone No" is already caught by 2, "Primary No" here); "Order Number", "Member No" -> False.
+
+    Examples: ``is_phone_header("Mobile") -> True``, ``is_phone_header("Occupation") -> False``.
+    """
+    words = set(_words(column))
+    if words & PHONE_ATTRIBUTE_WORDS or is_fax_column(column) or is_consent_column(column):
+        return False
+    if words & PHONE_WORDS:
+        return True
+    # Short "number" headers only: "Number 2" yes, "Loyalty Card Number" no (also has a NOT_PHONE word).
+    return bool(words & NUMBER_WORDS) and not (words & NOT_PHONE_WORDS) and len(words) <= 2
+
+
+def enough_evidence(p: ColumnProfile, share: float, minimum: float = 0.9) -> bool:
+    """Values alone say "phone" only when nearly all of them are phones and there are enough of them to tell.
+
+    A column like "Occupation" with two values, one of which someone typed a phone number into, is not a phone
+    column: 50% phone-like over 2 values is noise, not evidence.
+
+    Inputs: the column profile ``p``, the share (0..1) of its distinct sampled values that look like the type
+    (e.g. ``p.shares["phone"]``) and the minimum share (default 90%). Also requires at least 3 distinct values -
+    or, when the column has fewer than 3 filled cells, every filled cell distinct.
+
+    Examples: 5 distinct values, all phones -> True; "Occupation" ["Nurse", "2015550100"] -> False (share 0.5);
+    an empty column -> False (share 0).
+    """
+    return share >= minimum and p.unique >= min(3, p.non_empty)
+
+
+def header_score(column: str, f: FieldSpec) -> float:
+    """How well the header ``column`` names field ``f``, from 0 (unrelated) to 100 (exact name or synonym).
+
+    The header is compared with every candidate name of the field (:func:`_candidates`); the best result wins:
+
+    * 100 - same normalised text ("Mobile #" vs synonym "mobile #"; case, spaces and punctuation ignored).
+    * 92  - same meaningful words once filler words are removed ("Spin Date" vs "last spin": both "spin").
+    * 82  - the candidate (5+ characters) appears inside the header ("Guest Mobile Number" contains
+      "mobilenumber").
+    * 65  - the header (6+ characters, not generic) appears inside a candidate ("Customer" inside
+      "customer last name"): weak, since the header only names part of the field.
+    * fuzzy ratio (0-100, rapidfuzz) of the meaningful parts, for typos and word-order variants.
+
+    Generic headers ("Date", "Name", "Status", ...) score 100 only on an exact match, else 0: they could mean
+    any field. Returns 0.0 for a header with no letters or digits.
+    """
+    h = norm_header(column)
+    if not h:
+        return 0.0
+    hc = _core(column)
+    if h in GENERIC_HEADERS:
+        return 100.0 if any(h == norm_header(n) for n in _candidates(f)) else 0.0
+    best = 0.0
+    for name in _candidates(f):
+        c = norm_header(name)
+        if not c:
+            continue
+        if h == c:
+            return 100.0
+        cc = _core(name)
+        if hc and cc and hc == cc:
+            best = max(best, 92.0)  # same meaningful words, e.g. "Spin Date" vs "last spin"
+        # Containment: short candidates (< 5 chars, e.g. "tel", "cell") are excluded because they occur inside
+        # unrelated words ("Hotel", "Excellent").
+        if len(c) >= 5 and c in h:
+            best = max(best, 82.0)
+        elif len(h) >= 6 and h not in GENERIC_HEADERS and h in c:
+            best = max(best, 65.0)  # header is only part of a synonym (e.g. "Customer" in "customer last name")
+        # Fuzzy similarity on the meaningful part only, so "Join Date" doesn't look like "Spin Date".
+        if hc and cc:
+            best = max(best, fuzz.ratio(hc, cc))
+        elif not hc and not cc:
+            # Both consist of filler words only (e.g. "Last Date" vs "date time"): compare the whole headers.
+            best = max(best, fuzz.ratio(h, c))
+    return best
+
+
+def names_other_number(column: str) -> bool:
+    """True when the header names a number that isn't a phone: "Account Number", "Order #", "Member No", "Card
+    Number", "Loyalty ID". A phone word wins ("Customer Phone", "Guest Phone": phone headers)."""
+    words = set(_words(column))
+    return bool(words & NOT_PHONE_WORDS) and not (words & PHONE_WORDS)
+
+
+def type_share(column: ColumnProfile, f: FieldSpec, hs: float) -> float:
+    """Share (0..1) of the column's sampled values that fit typed field ``f`` (``hs``: its header score for ``f``).
+
+    The profile's share for the field's kind (phone, email, date…). For a date field whose header clearly names it
+    (``hs`` 80+), values are also run through the field's own date reader: the profile's quick date check doesn't
+    count bare numbers (they could be phones or IDs) or years before 1900, so a "Last Visit" column of Excel serial
+    numbers (46304.65625), Unix timestamps or compact dates (20261009), or a "Birthday" column of 09/12/1600 values,
+    scored too low to be mapped before 0.18.0.
+        "Last Visit" ["46304.65625", "46305.5"] → 1.0;  "Visits" ["3", "12"] → 0.0 (not dates either way)
+    """
+    kind = TYPED.get(f.type)
+    share = column.shares.get(kind, 0.0) if kind else 0.0
+    if kind != "date" or share >= 0.8 or hs < 80 or not column.samples:
+        return share
+    dates = _sample_dates(column, f)
+    return max(share, sum(d is not None for d in dates) / len(dates))
+
+
+def _sample_dates(column: ColumnProfile, f: FieldSpec) -> list[str | None]:
+    """The column's sample values converted by date field ``f``'s own reader, with the column's context (day-first,
+    Excel serials, placeholder year); None where a value isn't a date. Placeholder blanks ("0000-00-00") are None.
+    """
+    ctx = N.prepare(f, list(column.samples), {})
+    out: list[str | None] = []
+    for v in column.samples:
+        value, err = N.normalize(v, f, {}, ctx)
+        out.append(value if value and not err else None)
+    return out
+
+
+def score(column: ColumnProfile, f: FieldSpec) -> float:
+    """Overall fit (roughly 0..100) of a source column for a target field: header evidence + value evidence.
+
+    * Consent columns -> 0: never mapped. Fax columns -> 0 for phone fields: a fax line can't receive texts.
+      A date about a birthday or anniversary ("Birthday Reward Sent", :data:`DATE_EVENT_WORDS`) -> 0 for "date"
+      fields.
+    * A header naming another kind of number ("Account Number", "Order #", "Loyalty ID") gets no header evidence
+      for the phone field (:func:`names_other_number`).
+    * Empty column (no values in this file) -> half the header score: no value evidence, so it can't reach the
+      step-1 thresholds of :func:`auto_map` on its own (an empty "Phone 4" is handled by the phone step instead).
+    * Typed fields (phone, email, date, datetime, zip, state): ``0.55 * header + 45 * share`` where ``share`` is
+      the fraction of the column's values that look like that type (:func:`type_share`: for a date header that
+      clearly names the field, also values only the field's own date reader understands - Excel serials, Unix
+      timestamps, 20261009, 09/12/1600). An exact header with all values matching
+      scores 100; values alone (header 0, share 1.0) give only 45, below the threshold, so values never map a
+      typed field in step 1 - the phone and email steps decide those cases with stricter rules.
+      Minus 25 when fewer than 20% of the values fit and the header isn't exact (a "Phone Notes" column of text).
+      Date fields are capped at 50 unless the header scores 80+: files often have several date columns
+      ("Created", "Last Visit", "Birthday"), so only a header that clearly names the field may claim it.
+    * Other fields (string, number, enum, boolean): header score only, minus 40 when the column is clearly
+      phones, emails or dates (80%+) and the header isn't exact - e.g. a "Visit Notes" string field shouldn't
+      take a column full of dates just because the header is similar.
+
+    Example: header "Cell" (synonym -> 100) with 95% phone-like values -> 0.55*100 + 45*0.95 = 97.75.
+    """
+    if is_consent_column(column.name) or (f.type == "phone" and is_fax_column(column.name)):
+        return 0.0
+    # "Birthday Reward Sent", "Anniversary Email Date": a date about the birthday, not the birthday.
+    if f.type == "date" and set(_words(column.name)) & DATE_EVENT_WORDS:
+        return 0.0
+    hs = header_score(column.name, f)
+    # "Account Number" looks a lot like "contact number" / "phone number" to a fuzzy comparison, and ten-digit IDs
+    # are often valid phone numbers by chance: without this, an ID column could be taken for the phone. Such a
+    # header gives no header evidence for the phone field; only clear phone values can still make it one (step 2).
+    if f.type == "phone" and names_other_number(column.name):
+        hs = 0.0
+    kind = TYPED.get(f.type)
+    if column.non_empty == 0:
+        return hs * 0.5
+    if kind:
+        share = type_share(column, f, hs)
+        # Weights: the header counts a bit more than the values (55 vs 45), both together reach 100.
+        s = 0.55 * hs + 45 * share
+        if share < 0.2 and hs < 100:
+            s -= 25
+        if kind == "date" and hs < 80:
+            s = min(s, 50)  # files often have several date columns: the header must clearly name the field
+        return s
+    # string / numeric / enum targets: header evidence only, penalise strongly-typed columns
+    best_type, best_share = column.best_type()
+    if best_share >= 0.8 and best_type in ("phone", "email", "date") and hs < 100:
+        hs -= 40
+    return hs
+
+
+def _confidence(s: float, hs: float = 0.0, share: float | None = None) -> str:
+    """Confidence label ("high" / "medium" / "low") shown in the review grid for a step-1 match.
+
+    Inputs: the overall :func:`score` ``s``, the :func:`header_score` ``hs`` and, for typed fields only, the
+    value ``share`` (``None`` for untyped fields).
+
+    * Exact header (``hs`` 100): "high", but only "medium" for a typed field whose values mostly don't fit
+      (share below 30%) - the header says phone, the values disagree, so a reviewer should look.
+    * Otherwise by score: 85+ "high", 70+ "medium", below that "low".
+
+    Example: ``_confidence(77.5, 100, 0.5) -> "high"``; ``_confidence(66, 100, 0.2) -> "medium"``.
+    """
+    if hs >= 100:
+        return "high" if share is None or share >= 0.3 else "medium"
+    return "high" if s >= 85 else "medium" if s >= 70 else "low"
+
+
+def auto_map(schema: TargetSchema, profiles: list[ColumnProfile], df: pd.DataFrame | None = None) -> Mapping:
+    """Propose a mapping for every schema field from the source column profiles, using rules only.
+
+    Inputs: the target schema and one :class:`~converter.mapping.ColumnProfile` per source column (from
+    ``mapping.profile_columns``); optionally the file itself (``df``), which step 2b reads in full when the file has
+    an area code column (otherwise only the profiles' sample values are used). Output: a
+    :class:`~converter.mapping.Mapping` with an entry for every schema field; unmatched fields keep the empty
+    ``FieldMapping()`` (transform "none"). Callers run ``Mapping.normalized`` on the result.
+
+    Steps (each step only fills what earlier steps left open, unless stated otherwise):
+
+    1. Direct matches - every (field, column) pair scored by :func:`score`; pairs above the threshold are
+       assigned best-first, each field and each column at most once. A date column with a time column named the
+       same way ("Last Visit Date" + "Last Visit Time") is combined with it (:func:`_named_time_partner`).
+    2. Phone - collect every phone column (by header, or by clear phone values); several -> "One row per phone
+       number" (``each_row``) with mobile columns first; one -> copy. Step 2 never adds phone-setting columns
+       such as "phone4MarketingPreference" or a column like "Occupation" with a stray number typed into it (a
+       phone-setting column whose values look like phone numbers can still be picked in step 1). Then (2b) an
+       "Area Code" column next to 7-digit numbers -> "Phone + area code column" (``area_code``,
+       :func:`_map_area_code_column`).
+    3. Email - by values alone, when exactly one unused column is 80%+ email addresses.
+    4. Full name - a whole-name column ("Customer Name") is split into first_name / last_name.
+    5. Full address - a one-line address column is parsed into address1 / address2 / city / state / zip.
+    6. Birthday / anniversary - a date split over "Birth Month" + "Birth Day" (+ "Birth Year") columns is
+       combined (this step overrides earlier matches of those columns), unless step 1 found a complete date
+       column for the field that gives the year at least as often (:func:`_full_date_wins`).
+    7. One last date - when no last-activity column was found by name, ONE date column still gets imported: the
+       best generically named one ("Date", "Start Time", "Timestamp", "Updated"), or, failing that, a creation-type
+       date ("Date Created", "Sign Up Date", "First Visit"). It goes to the field marked ``generic_date: call_log``
+       (calls_last) in a call log, or ``generic_date: default`` (transactions_last) in any other file. Birthday,
+       expiry and opt-in dates never do. A separate Time column is combined with its Date column. Low confidence:
+       the reviewer checks it.
+
+    Steps 1-3 never use consent columns (score 0 / explicit skip); steps 4-6 don't check for them (e.g. a
+    "Subscriber Name" column, also a consent-looking header, can still be split into first/last name).
+
+    Example (real schema): columns ``["phone", "phone2", "phoneMarketingPreference", "lastVisitDate"]`` with
+    phone numbers in the first two -> phone_number from ``phone`` + ``phone2`` (each_row, "2 phone columns: one
+    row per different number"), transactions_last copied from ``lastVisitDate`` ("header 'lastVisitDate'
+    matches"), and the preference column stays unmapped.
+    """
+    # Every schema field starts unmapped; `used` holds source columns already taken, so that normally one
+    # column feeds one field (steps 4 and 5 deliberately feed several fields from one column).
+    fields: dict[str, FieldMapping] = {f.name: FieldMapping() for f in schema.fields}
+    used: set[str] = set()
+    by_name = {p.name: p for p in profiles}
+
+    # 1. Direct matches, best scores first.
+    # Score every (mappable field, column) pair and keep those above the threshold. Typed fields (phone, email,
+    # date, ...) need 60 because values add evidence; header-only fields need 72 so a vague similarity alone
+    # doesn't map a column. Fixed-blank fields (e.g. consent) are not mappable and never considered.
+    scored = []
+    for f in schema.auto_fields:  # never manual-only fields (consent, last_contacted): a person maps those
+        threshold = 60 if f.type in TYPED else 72
+        for p in profiles:
+            s = score(p, f)
+            if s >= threshold:
+                scored.append((s, f.name, p.name))
+    # Greedy assignment, best pair first: a column that fits two fields goes to the one it fits best, and the
+    # other field may still get its second-best column.
+    scored.sort(reverse=True)
+    for s, fname, col in scored:
+        if fields[fname].transform != "none" or col in used:
+            continue  # field already has a column, or the column already feeds a better-matching field
+        f = schema.field(fname)
+        hs = header_score(col, f)
+        kind = TYPED.get(f.type)
+        share = type_share(by_name[col], f, hs) if kind else 0.0
+        # Explain the match in the words a reviewer understands: header, values, or a similar header.
+        if hs >= 100:
+            reason = f"header '{col}' matches"
+        elif kind and share >= 0.8 and hs < 70:
+            reason = f"{share:.0%} of values in '{col}' look like {kind} values"
+        else:
+            reason = f"header '{col}' is similar ({hs:.0f}/100)" + (f"; {share:.0%} look like {kind}" if kind else "")
+        fields[fname] = FieldMapping(sources=[col], transform="copy", origin="rule",
+                                     confidence=_confidence(s, hs, share if kind else None), reason=reason)
+        used.add(col)
+
+    # 1b. A date column matched above with a time column named the same way ("Last Visit Date" + "Last Visit
+    # Time", "Call Date" + "Call Time"): both are combined, so the time isn't lost (before 0.18.0 every such row got
+    # 12:00 AM). Only for date-and-time fields, and only when the date column holds no times of its own.
+    for f in schema.auto_fields:
+        fm = fields[f.name]
+        if f.type != "datetime" or fm.transform != "copy" or len(fm.sources) != 1:
+            continue
+        time_col = _named_time_partner(by_name[fm.sources[0]], profiles, used)
+        if time_col:
+            fields[f.name] = FieldMapping(sources=[fm.sources[0], time_col], transform="concat",
+                                          params={"separator": " "}, origin="rule", confidence=fm.confidence,
+                                          reason=f"{fm.reason}; times in '{time_col}'")
+            used.add(time_col)
+
+    # 2. Phone: prefer mobile columns, fall back to other phone columns.
+    # A file can have several phone columns (Toast exports: phone, phone2, phone3, phone4). All of them feed the
+    # phone field, and each different number becomes its own output row (transform "each_row"), so no number is
+    # lost. Columns that are only ABOUT the phone (preference, type, opt-in, ...) must never be taken.
+    for f in schema.fields:
+        if f.type != "phone":
+            continue
+        fm = fields[f.name]
+
+        def _phone_column(p: ColumnProfile) -> bool:
+            """Whether column ``p`` holds phone numbers for the phone step.
+
+            * Phone header ("Mobile", "Phone 2", "Cell #"): yes if 30%+ of its values look like phones, or if it
+              is empty in this file (e.g. "Phone 4" in a Toast export: kept so the mapping, and a template saved
+              from it, also covers files where that column is filled).
+            * Header mentions a phone word but isn't a phone header ("phone4MarketingPreference", "Phone Type"):
+              never - it describes the phone, it isn't the number.
+            * Header says nothing about phones ("Col 7", "Occupation"): only with clear value evidence (see
+              :func:`enough_evidence`), so one stray number typed into "Occupation" doesn't make it a phone column.
+            * A fax column ("Fax", "Fax Number", "Business Fax"): never, however phone-like its values.
+            """
+            if is_fax_column(p.name):
+                return False
+            share = p.shares.get("phone", 0)
+            if is_phone_header(p.name):
+                # Named like a phone column: needs some phone numbers in it (or be empty in this file, e.g. Phone 4).
+                return p.non_empty == 0 or share >= 0.3
+            if any(w in PHONE_WORDS for w in _words(p.name)):
+                return False  # a column ABOUT the phone (preference, type, opt-in…), never the number
+            return enough_evidence(p, share)  # column name says nothing about phones: values must be clear
+
+        # Candidates, in file order: the column(s) step 1 already gave this phone field (always kept: a column that
+        # step 1 matched, e.g. "To" holding the client's own line on every row, must not push out the others),
+        # plus phone columns not taken by ANOTHER field, never consent columns.
+        phone_cols = [p.name for p in profiles if p.name in fm.sources
+                      or (_phone_column(p) and p.name not in used and not is_consent_column(p.name))]
+        if fm.transform == "none":
+            # Step 1 found no phone column by header. Then columns whose VALUES are clearly phone numbers are
+            # more trustworthy than weakly named ones: if there are any, use only those.
+            strong = [p for p in profiles if p.name not in used and enough_evidence(p, p.shares.get("phone", 0))
+                      and not is_consent_column(p.name) and not is_fax_column(p.name)]
+            if strong:
+                phone_cols = [p.name for p in strong]
+        if len(phone_cols) >= 2:
+            # Several phone columns -> one row per different number (this also replaces a step-1 single copy).
+            # Mobile-looking columns first (the first number stays on the file row, the others become extra
+            # rows), otherwise file order.
+            ordered = sorted(phone_cols, key=lambda c: (not any(h in c.lower() for h in MOBILE_HINTS), phone_cols.index(c)))
+            fields[f.name] = FieldMapping(sources=ordered, transform="each_row", origin="rule", confidence="medium",
+                                          reason=f"{len(ordered)} phone columns: one row per different number")
+            used.update(ordered)
+        elif len(phone_cols) == 1 and fm.transform == "none":
+            # A single phone column found only now (by header words or values): copy it, with low confidence.
+            fields[f.name] = FieldMapping(sources=phone_cols, transform="copy", origin="rule", confidence="low",
+                                          reason=f"values in '{phone_cols[0]}' look like phone numbers")
+            used.update(phone_cols)
+
+    # 2b. Phone numbers without their area code, which sits in a column of its own ("Area Code": 516, "Phone":
+    # 555-0177): 'Phone + area code column' gives each 7-digit number its row's area code (0.21.0). Real data from
+    # the file, so it comes before any guess (the file's main area code is only a repair for what is left).
+    for f in schema.auto_fields:
+        if f.type == "phone":
+            _map_area_code_column(f, profiles, fields, used, df)
+
+    # 3. Email by value type alone (unambiguous).
+    # Only when exactly one unused column is 80%+ email addresses; with two candidates (e.g. "Email" and
+    # "Work Email" with unclear headers) the choice is left to Claude or the reviewer.
+    for f in schema.fields:
+        if f.type == "email" and fields[f.name].transform == "none":
+            cands = [p for p in profiles if p.name not in used and p.shares.get("email", 0) >= 0.8
+                     and not is_consent_column(p.name)]
+            if len(cands) == 1:
+                fields[f.name] = FieldMapping(sources=[cands[0].name], transform="copy", origin="rule",
+                                              confidence="low", reason="values look like email addresses")
+                used.add(cands[0].name)
+
+    # 4. Full name → first / last.
+    # Only for schemas with string fields named first_name / last_name.
+    name_targets = {f.name: f for f in schema.fields if f.type == "string" and f.name in ("first_name", "last_name")}
+
+    def _from_full_name_column(n: str) -> bool:
+        """True when step 1 mapped field ``n`` by copying a whole-name column (e.g. last_name <- "Customer Name").
+
+        Copying a whole name into one part is wrong; such a match is undone and replaced by a split below.
+        """
+        fm = fields[n]
+        return fm.transform == "copy" and norm_header(fm.sources[0]) in FULL_NAME_HEADERS
+
+    # Split only when no real first/last-name column was found: every name field must be unmapped or wrongly
+    # copied from a whole-name column. A file with "First Name" + "Last Name" columns is left alone.
+    if name_targets and all(fields[n].transform == "none" or _from_full_name_column(n) for n in name_targets):
+        for n in name_targets:
+            if _from_full_name_column(n):
+                # Undo the whole-name copy and release the column so it can be found again below.
+                used.discard(fields[n].sources[0])
+                fields[n] = FieldMapping()
+        # Prefer a header that is clearly a whole name ("Name", "Customer Name", "Guest")...
+        full = next((p for p in profiles if norm_header(p.name) in FULL_NAME_HEADERS and p.name not in used), None)
+        if full is None:
+            # ...else any unused header containing "name", except names of things other than a person
+            # ("Username", "File Name", "Store Name", "Company Name", ...) and first/last-name columns.
+            full = next((p for p in profiles if "name" in norm_header(p.name) and p.name not in used
+                         and not any(k in norm_header(p.name) for k in ("first", "last", "user", "file", "store",
+                                                                         "company", "business", "location"))), None)
+        if full is not None:
+            # The same column feeds both fields; the name_part transform picks the first or last part
+            # (it also understands "Last, First").
+            for n in name_targets:
+                part = "first" if n == "first_name" else "last"
+                fields[n] = FieldMapping(sources=[full.name], transform="name_part", params={"part": part},
+                                         origin="rule", confidence="medium",
+                                         reason=f"split full name in '{full.name}'")
+            used.add(full.name)
+
+    # 5. Full single-line address → street / unit / city / state / zip.
+    # Schema field name -> part extracted by the address_part transform. Only fields present in the schema count.
+    addr_targets = {"address1": "line1", "address2": "line2", "city": "city", "state": "state", "zip": "zip"}
+    present = {k: v for k, v in addr_targets.items() if k in fields}
+    if present:
+        current = fields.get("address1")
+        addr_col = None
+        # Case A: step 1 copied a column into address1, but its values are whole addresses
+        # ("12 Main St, Springfield, NJ 07081") -> parse that column instead of copying it.
+        if current and current.transform == "copy" and current.sources:
+            p = by_name.get(current.sources[0])
+            if p and _mostly_full_addresses(p):
+                addr_col = p.name
+        # Case B: address1 still unmapped -> look for an unused full-address column (header AND values must fit).
+        if addr_col is None and current is not None and current.transform == "none":
+            for p in profiles:
+                if p.name not in used and (norm_header(p.name) in FULL_ADDRESS_HEADERS) and _mostly_full_addresses(p):
+                    addr_col = p.name
+                    break
+        if addr_col:
+            # address1 always switches to the parsed street line; the other parts are only filled when no
+            # dedicated column (e.g. a separate "City" or "Zip" column) was matched already.
+            for target, part in present.items():
+                if target == "address1" or fields[target].transform == "none":
+                    fields[target] = FieldMapping(sources=[addr_col], transform="address_part", params={"part": part},
+                                                  origin="rule", confidence="medium",
+                                                  reason=f"parsed from full address in '{addr_col}'")
+            used.add(addr_col)
+
+    # 6. Birthday / anniversary split over a month column and a day column (and maybe a year column).
+    # Each target is paired with the header words that identify its columns ("Birth Month", "dobDay",
+    # "anniversaryMonth", "Wedding Day", ...). The parts are joined with a space ("9 12" / "Sep 25 1985") and the
+    # date normaliser parses the result; a month + day without a year gets the schema's no-year value (e.g. 1600).
+    for target, keys in (("birthday", {"birth", "birthday", "bday", "dob", "born"}),
+                         ("anniversary", {"anniversary", "anniv", "wedding"})):
+        if target not in fields:
+            continue
+        parts = _date_part_columns(profiles, keys)
+        if parts and _full_date_wins(fields[target], parts, by_name, schema.field(target)):
+            continue  # a complete "Birthday" column gives the year too; the part columns stay unused
+        if parts:
+            fields[target] = FieldMapping(sources=parts, transform="concat", params={"separator": " "}, origin="rule",
+                                          confidence="medium",
+                                          reason=f"{target} is split over {', '.join(repr(c) for c in parts)}")
+            # If a part column already feeds another field (matched in step 1 by a similar header), clear that
+            # field so the column isn't used twice.
+            for name, fm in fields.items():
+                if name != target and set(fm.sources) & set(parts):
+                    fields[name] = FieldMapping()
+            used.update(parts)
+
+    # 7. Generic date columns -> a last-activity field, so a file's dates are imported even when the header doesn't
+    # say which activity they record. Only fields marked generic_date in the schema, and only those still unmapped.
+    _map_generic_dates(schema, profiles, fields, used)
+
+    return Mapping(fields=fields)
+
+
+def _cells(name: str, profiles: dict[str, ColumnProfile], df: pd.DataFrame | None) -> Iterator[str]:
+    """The column's filled cells, cleaned like the converter does: every row when the file (`df`) is given, else the
+    profile's sample values."""
+    if df is not None and name in df.columns:
+        return (v for v in map(N.clean_text, df[name].tolist()) if v)
+    return iter(profiles[name].samples if name in profiles else [])
+
+
+def _area_code_share(name: str, profiles: dict[str, ColumnProfile], df: pd.DataFrame | None) -> float:
+    """Share of a column's filled cells (every row, so one odd value among thousands barely counts) that are area
+    codes in use: "516", "(516)", "516.0". Zeros ("0", "000") are left out, like empty cells: exports write them
+    for "no area code"."""
+    counts = Counter(v for v in _cells(name, profiles, df) if not re.fullmatch(r"0+(\.0+)?", v))
+    total = sum(counts.values())
+    good = sum(n for v, n in counts.items() if (code := N.area_code_cell(v)) and N._area_code_in_use(code))
+    return good / total if total else 0.0
+
+
+def _map_area_code_column(f: FieldSpec, profiles: list[ColumnProfile], fields: dict[str, FieldMapping],
+                          used: set[str], df: pd.DataFrame | None = None) -> None:
+    """Step 2b of :func:`auto_map`: combine area code columns with 7-digit phone numbers (in place).
+
+    The area code columns: named like one (:func:`mapping.is_area_code_header`: "Area Code", "AreaCode", "NPA",
+    "Home Area Code") with 80%+ of their filled cells area codes in use ("516", "(516)"), counted over every row of
+    the file (``df``; the sampled values when it isn't given). The numbers: the phone field's columns from the steps
+    before, plus unused phone-named columns ("Phone", "Cell") holding any 7-digit value - those may not look like
+    phone columns by value, so the steps before can leave them out. Only done when one of the numbers' columns
+    holds a 7-digit value anywhere in the file (also after thousands of full numbers); numbers that already have
+    an area code are kept as they are. With several area code columns each phone column gets its own
+    (:func:`mapping.area_code_pairs`: "Home Phone" ← "Home Area Code").
+
+    Example: ["Name", "Area Code", "Phone"] with 516 and 555-0177 -> phone_number = Phone + area code column of
+    ["Area Code", "Phone"]: "(516) 555-0177" -> 5165550177.
+    """
+    by_name = {p.name: p for p in profiles}
+    fm = fields[f.name]
+    if fm.transform not in ("none", "copy", "each_row"):
+        return  # combined some other way (a person or a template decided)
+    current = list(fm.sources) if fm.transform in ("copy", "each_row") else []
+    # An area code column the steps before took for a phone column ("Phone Area Code") still counts.
+    areas = [p.name for p in profiles if (p.name not in used or p.name in current) and is_area_code_header(p.name)
+             and _area_code_share(p.name, by_name, df) >= 0.8]
+    if not areas:
+        return
+    current = [c for c in current if c not in areas]
+    has_local = {c: any(N.is_local_number(v) for v in _cells(c, by_name, df))
+                 for c in [*current, *(p.name for p in profiles if p.name not in used and p.name not in areas
+                                       and is_phone_header(p.name) and not is_fax_column(p.name))]}
+    local = [c for c in has_local if c not in current and has_local[c]]
+    if not local and not any(has_local.get(c) for c in current):
+        return  # every number already has its area code
+    phones = [*current, *local]
+    # Each area code column followed by the phone columns that take their area code from it; phone columns with no
+    # area code column of their own last.
+    ordered, pairs = area_code_pairs([*areas, *phones], [])
+    sources = []
+    for a in [*ordered, None]:
+        sources += ([areas[a]] if a is not None else []) + [phones[i - len(areas)] for i in sorted(pairs)
+                                                             if pairs[i] == a]
+    fields[f.name] = FieldMapping(sources=sources, transform="area_code", origin="rule", confidence="medium",
+                                  reason="7-digit numbers get the area code from " + ", ".join(f"'{a}'" for a in areas))
+    used.update(sources)
+
+
+def _looks_like_call_log(profiles: list[ColumnProfile]) -> bool:
+    """Whether the file is a call log: a header with a call word ("Caller ID", "Call Type", "Duration",
+    "Direction", "Missed") or both a From and a To column ("From", "To Number"). Consent columns ("Do Not Call",
+    "Call Opt In") don't count, and see :func:`_call_log_header` for "duration" and "extension".
+
+        ["Date", "Direction", "From", "To"] → True;  ["Name", "Phone", "Last Visit"] → False
+        ["Phone", "Do Not Call", "Membership Duration", "Date"] → False
+    """
+    words = [set(_words(p.name)) for p in profiles if not is_consent_column(p.name)]
+    if any(_call_log_header(w) for w in words):
+        return True
+    return any("from" in w for w in words) and any("to" in w for w in words)
+
+
+def _call_log_header(words: set[str]) -> bool:
+    """Whether a header (its words) belongs to a call log. "duration" only in a call-length header ("Duration",
+    "Call Duration", "Talk Time (sec)"; not "Membership Duration"), "extension" only without a phone word (a phone
+    system's "Extension", not a contact's "Phone Extension")."""
+    if words & (CALL_LOG_WORDS - {"duration", "extension"}):
+        return True
+    if "duration" in words and words <= _DURATION_HEADER_WORDS:
+        return True
+    return "extension" in words and not words & PHONE_WORDS
+
+
+def _activity_rank(column: str) -> int:
+    """How strongly a generic date header suggests the customer's latest activity (higher = better).
+
+    3: "last", "latest", "recent" ("Last Updated", "Most Recent");  2: an activity word ("Visit Date", "Order Time",
+    "Call Time");  0: the end or edit time of something ("End Time", "Updated", "Modified");  1: anything else
+    ("Date", "Start Time", "Timestamp").
+    """
+    w = set(_words(column))
+    if w & {"last", "latest", "recent", "most"}:
+        return 3
+    if w & {"visit", "visited", "order", "ordered", "transaction", "purchase", "call", "called", "activity", "seen",
+            "checkin", "check", "sale"}:
+        return 2
+    if w & {"end", "ended", "updated", "modified", "changed", "edited"}:
+        return 0
+    return 1
+
+
+def _time_partner(date_col: str, profiles: list[ColumnProfile], used: set[str]) -> str | None:
+    """A separate time-of-day column to combine with ``date_col``: unused, header contains "time" (but not "date"),
+    and nearly all values are times on their own ("3:15 PM"). E.g. "Date" + "Time" in a phone-system export.
+    None when the date column already holds times (the time would be written twice)."""
+    by_name = {p.name: p for p in profiles}
+    if date_col in by_name and _has_times(by_name[date_col]):
+        return None
+    for p in profiles:
+        w = set(_words(p.name))
+        if p.name == date_col or p.name in used or "time" not in w or "date" in w or not p.samples:
+            continue
+        if sum(bool(_TIME_ONLY_RE.match(v)) for v in p.samples) / len(p.samples) >= 0.8:
+            return p.name
+    return None
+
+
+def _named_time_partner(date_col: ColumnProfile, profiles: list[ColumnProfile], used: set[str]) -> str | None:
+    """The time column named like ``date_col`` with "time" for "date": "Last Visit Date" → "Last Visit Time",
+    "Date of Last Order" → "Time of Last Order", "callDate" → "callTime". It must be unused and nearly all its
+    values times on their own ("3:15 PM", "15:15"), and the date column must hold no times. Else None.
+    """
+    words = _words(date_col.name)
+    if "date" not in words or _has_times(date_col):
+        return None
+    want = [w for w in words if w != "date"]
+    for p in profiles:
+        if p.name == date_col.name or p.name in used or not p.samples:
+            continue
+        w = _words(p.name)
+        if "time" not in w or "date" in w or [x for x in w if x != "time"] != want or not want:
+            continue
+        if sum(bool(_TIME_ONLY_RE.match(v)) for v in p.samples) / len(p.samples) >= 0.8:
+            return p.name
+    return None
+
+
+def _has_times(p: ColumnProfile) -> bool:
+    """Whether a date column's sample values include a time of day ("10/01/2026 3:15 PM", ISO "…T15:15:00").
+
+    Midnight alone doesn't count: a spreadsheet date cell reads as "2026-03-15 00:00:00" (the date parser drops that
+    midnight when a time from a Time column follows it).
+    """
+    return any(":" in v and not _MIDNIGHT_RE.search(v) for v in p.samples)
+
+
+def _map_generic_dates(schema: TargetSchema, profiles: list[ColumnProfile], fields: dict[str, FieldMapping],
+                       used: set[str]) -> None:
+    """Step 7 of :func:`auto_map`: make sure a file's last date is imported - one date per row (in place).
+
+    Nothing happens when a last-activity field (any datetime field) already has a column by name ("Last Visit",
+    "Last Call", "Last Reward Redeemed"): a row has one last date, so a generic or creation date isn't added on top.
+    (A file that names both a last call and a last transaction keeps both from step 1.)
+
+    Otherwise one column goes to the first-choice field - ``generic_date: call_log`` in a call log
+    (:func:`_looks_like_call_log`), ``generic_date: default`` otherwise - chosen in this order:
+
+    1. a generically named date (best :func:`_activity_rank`, then file order): "Last Updated", "Visit Date",
+       "Date", "Start Time", "Timestamp", "Updated", "End Time";
+    2. only if there is none: a creation-type date (:data:`CREATION_DATE_WORDS`): "Date Created", "Sign Up Date",
+       "Joined", "First Visit" - better than no date at all.
+
+    Candidates are unused, non-consent columns whose values are clearly dates (80%+, see :func:`enough_evidence`),
+    never birthday / expiry / opt-in dates (:data:`NEVER_ACTIVITY_DATE_WORDS`) and never a column that names an
+    always-blank or hand-mapped-only field ("Last Campaign Sent" is last_contacted, which only a person maps).
+
+    Examples (real schema): a call log with "Date", "Direction", "From", "To" -> calls_last <- "Date"; a customer
+    list with "Date Created" and "Updated" -> transactions_last <- "Updated"; a list whose only date is "Date
+    Created" -> transactions_last <- "Date Created"; "Last Visit" + "Date Created" -> only "Last Visit".
+    """
+    targets = {f.generic_date: f.name for f in schema.auto_fields if f.generic_date}
+    if not targets:
+        return
+    if any(f.type == "datetime" and fields[f.name].transform != "none" for f in schema.auto_fields):
+        return  # the file already gives a last date by name
+    call_log = _looks_like_call_log(profiles)
+    target = targets.get("call_log" if call_log else "default") or next(iter(targets.values()))
+    # Columns that name an always-blank or hand-mapped-only field (e.g. "Last Campaign Sent" = last_contacted, when
+    # we last texted the customer) are about that field and stay out, like consent columns.
+    fixed = [f for f in schema.fields if f.fixed_blank or f.manual_only]
+    dates = [p for p in profiles
+             if p.name not in used and not is_consent_column(p.name)
+             and not set(_words(p.name)) & NEVER_ACTIVITY_DATE_WORDS
+             and not any(header_score(p.name, f) >= 80 for f in fixed)
+             and enough_evidence(p, p.shares.get("date", 0.0), minimum=0.8)]
+    generic = sorted((p for p in dates if not set(_words(p.name)) & CREATION_DATE_WORDS),
+                     key=lambda p: -_activity_rank(p.name))  # stable: equal ranks keep file order
+    creation = [p for p in dates if set(_words(p.name)) & CREATION_DATE_WORDS]
+    if generic:
+        col, why = generic[0], "this looks like a call log" if call_log else "used as the latest activity"
+    elif creation:
+        col, why = creation[0], "the file has no last-activity date, so the creation date is used"
+    else:
+        return
+    time_col = _time_partner(col.name, profiles, used)
+    if time_col:
+        fields[target] = FieldMapping(sources=[col.name, time_col], transform="concat", params={"separator": " "},
+                                      origin="rule", confidence="low",
+                                      reason=f"dates in '{col.name}' with times in '{time_col}' ({why}) - check")
+        used.update([col.name, time_col])
+    else:
+        fields[target] = FieldMapping(sources=[col.name], transform="copy", origin="rule", confidence="low",
+                                      reason=f"dates in '{col.name}' ({why}) - check")
+        used.add(col.name)
+
+
+def _full_date_wins(current: FieldMapping, parts: list[str], by_name: dict[str, ColumnProfile], f: FieldSpec) -> bool:
+    """Whether the complete date column step 1 gave birthday/anniversary field ``f`` beats the split ``parts``.
+
+    Exports often have both: "Birthday" (09/12/1985) and "Birth Month" + "Birth Day" made from it. Before 0.18.0
+    the parts always won, so every birthday lost its year. The complete column is kept when most of its values
+    (sampled) have a real year (not the no-year value 1600) and it is filled at least as often as the parts; the
+    year is what it adds. Otherwise (no years in it, or filled for fewer customers) the parts are used.
+    """
+    if current.transform != "copy" or len(current.sources) != 1 or current.sources[0] in parts:
+        return False
+    full = by_name.get(current.sources[0])
+    if full is None or not full.samples:
+        return False
+    dates = [d for d in _sample_dates(full, f) if d is not None]
+    no_year = str(f.no_year_value) if f.no_year_value is not None else None
+    with_year = sum(no_year is None or no_year not in d for d in dates)
+    filled = min(by_name[c].non_empty for c in parts[:2])  # month and day
+    return with_year >= 0.5 * len(full.samples) and full.non_empty >= filled
+
+
+def _date_part_columns(profiles: list[ColumnProfile], keys: set[str]) -> list[str]:
+    """['Birth Month', 'Birth Day'(, 'Birth Year')] when a date is split over separate columns, else [].
+
+    ``keys`` are the header words that identify the date (e.g. {"birth", "birthday", "dob", ...}). A column is a
+    part column when its header words contain one of ``keys`` AND a part word:
+
+    * month - "month" / "mon" / "mo" / "mm"; values may be numbers or names ("9", "Sep", "September").
+    * day   - "day" / "dd"; every sample value must be a whole number from 1 to 31.
+    * year  - "year" / "yr" / "yyyy"; optional (may be blank for many rows). A year of 0 means "no year".
+    A header about the day of the week ("Birthday Day of Week", "Birth Weekday") is never a part column: its
+    numbers (1–7) would be read as the day of the month.
+
+    A month and a day column, and two different ones, are required: a single "Birthday" column holding "9/12"
+    is not split (it has no part word), and neither is a "Birth Day" column holding "9/12" (not a day number).
+
+    Example: headers ``["phone", "Birth Month", "Birth Day", "Birth Year"]`` with keys for birthday ->
+    ``["Birth Month", "Birth Day", "Birth Year"]``.
+    """
+    def find(part_words: set[str], numbers_up_to: int | None) -> str | None:
+        """First column whose header has a key word and a part word (and, optionally, only numbers 1..N)."""
+        for p in profiles:
+            words = set(_words(p.name))
+            if not (words & keys) or not (words & part_words) or words & {"week", "weekday", "dow", "wk"}:
+                continue
+            # Value check (day column): every sample must be a whole number from 1 to `numbers_up_to`.
+            # A column without samples (empty in this file) passes on the header alone.
+            if numbers_up_to is not None and p.samples and not all(
+                    s.strip().isdigit() and 1 <= int(s) <= numbers_up_to for s in p.samples):
+                continue
+            return p.name
+        return None
+
+    month = find({"month", "mon", "mo", "mm"}, None)
+    day = find({"day", "dd"} , 31)
+    # Both parts are needed, from two different columns (a header like "Birth Month Day" matches both words).
+    if not (month and day) or month == day:
+        return []
+    year = find({"year", "yr", "yyyy"}, None)
+    return [month, day] + ([year] if year and year not in (month, day) else [])
+
+
+def _mostly_full_addresses(p: ColumnProfile) -> bool:
+    """True when at least half of the column's sample values look like complete one-line addresses.
+
+    "Complete" means street plus city/state/ZIP after a comma (see ``_FULL_ADDR_RE``), e.g.
+    "12 Main St, Springfield, NJ 07081". A column of plain street lines ("12 Main St") returns False, so it is
+    copied as-is instead of being parsed. A column without samples returns False.
+    """
+    if not p.samples:
+        return False
+    hits = sum(bool(_FULL_ADDR_RE.search(s)) for s in p.samples)
+    # At least one hit, and at least 50% of the samples: a few incomplete addresses don't block parsing.
+    return hits >= max(1, 0.5 * len(p.samples))
