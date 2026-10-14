@@ -33,7 +33,7 @@ connected to the main system. The conversion engine it is built on is described 
                                                       → records.importer.RecordSink.save: group the engine's
                                                         rows per file row, type the values, COPY into records
                                                         and record_phones, complete the import
- Find: requests, Limit to, found-set steps ───────►  records.find (node tree) → records.criteria (one SQL
+ Find: requests, found-set steps ────────────────►  records.find (node tree) → records.criteria (one SQL
                                                       condition per criterion) → counts / page / CSV
  Tag the found set ───────────────────────────────►  records.store.add_to_tag / remove_from_tag (+ tag_events)
  Tag export ──────────────────────────────────────►  records.tags.export_table (one row per number, merge rules)
@@ -58,9 +58,9 @@ job's `read_options` has `records_import_id`. See KNOWN_ISSUES #1 for what that 
 | `db.py` | Connection pool (psycopg 3 + psycopg_pool); `ensure_database` (creates the database when allowed, with ICU case rules so Å = å); `Database.setup`: `pg_trgm`, the fixed tables, one column per record field (added when missing; a retyped field only warns), indexes (trigram for text, b-tree for the rest), and `collation` (None when the database folds accented letters; otherwise an explicit collation for finds, `_case_collation`); `check_fields` (names must be valid columns, one phone field). |
 | `store.py` | `RecordStore`: businesses, services, imports, records, tags; the rules of one business per tag, unique names, deletions only when unused, tag history. All SQL except finds and exports. |
 | `importer.py` | `RecordSink` (the runner's sink): `build_records` (engine audit → one record per file row, typed values, all numbers, the row as written minus skipped columns), `save` (one transaction: COPY records and numbers, complete the import), `discard`; `creation_fallback` (see Tag export). |
-| `fields.py` | What a find can search: the record fields plus Any field, Full name, Business, Service, Tag, Phone problem, Import #, File name, Imported on, Record #, File row, Column: … |
+| `fields.py` | What a find can search: the record fields plus Any field, Full name, Business, Service, Tag, Phone problem, Import #, File name, Record created, Record ID, File row, Column: …; which of them get a box on the Find page (`FORM_KEYS`) and which have pickers (`PICKER_KEYS`). |
 | `criteria.py` | One criterion → one SQL condition, per kind of field (text, phone, number, date, true/false, business, …), FileMaker syntax; values always as parameters; every condition `COALESCE(…, false)`. The module docstring is the syntax reference (also shown on the page). |
-| `find.py` | Requests → found-set nodes (find, constrain, extend, omit records, show omitted, all, tag) → one SQL condition with Limit to; counts, pages (sorts), CSV. |
+| `find.py` | Requests (businesses, services, criteria; all optional) → found-set nodes (find, constrain, extend, omit records, show omitted, all, tag) → one SQL condition; counts, pages (sorts), CSV. |
 | `tags.py` | A tag's export: one row per unique number, filled by name from the record fields with the merge rules, written with the converter's writer; the file name. |
 | `ui.py` | The Find, Tags, Businesses and Services pages (Streamlit), given a `Ctx` by `app.py`. |
 
@@ -113,9 +113,11 @@ Foreign keys to `businesses` are `ON UPDATE CASCADE`, so a corrected business ID
 | A business ID wins over names starting with it; ranges are about IDs | `criteria.business_condition` |
 | A typed time means that minute; backward ranges refused | `criteria.date_token(with_time)`, `_backwards` |
 | Birthdays without a year (1600) only found by month/day or `1600` | `criteria.date_condition` (`no_year`) |
-| A prepared CSV belongs to one found set, Limit to and sort | `ui._found_set` (`found_csv["sig"]`) |
+| A prepared CSV belongs to one found set and sort | `ui._found_set` (`found_csv["sig"]`) |
 | Birthday month/day in any year; 1600 = no year | `criteria.date_token`, `_md_expr` |
-| Limit to on top of every found set | `find.where` |
+| Nothing required: a blank request is ignored, an all-blank find is every record | `find.Compiler.request` / `node` |
+| Ranges with an open end (`...X` up to and including X, `X...` from X on) | `criteria._range` and each kind's condition |
+| The requests are one form: typing doesn't rerun the page; Enter = Find (the form's first button) | `ui.page_find` |
 | One business per tag; counts of left-out records | `store.add_to_tag` |
 | Export: one row per number; latest dates; birthday with a year; consent blank; creation date per import | `tags.export_table`, `ALWAYS_BLANK`, `_pick_date`; `importer.creation_fallback` |
 | No live formulas in the found-set CSV | `find.found_set_csv` (`neutralise_formula`) |
@@ -162,10 +164,10 @@ database. Without PostgreSQL those tests are skipped with a message; the convert
 | Test module | Covers |
 |---|---|
 | `test_records_import.py` | one record per row, all numbers, rows without numbers, every column, Skip, typed values, consent by hand only, repaired numbers, creation-date fallback, cancel/fail cleanup, same file, delete import, 20,000 rows |
-| `test_records_find.py` | every criterion kind and operator, FileMaker request order, Omit with empty fields, constrain/extend/omit/show omitted, Limit to, tags as found sets, messages, counts, CSV, sorting |
-| `test_records_find_edges.py` | the cases the independent test found: accented letters (ICU and C-locale databases), business ID vs names, times in dates, today's time zone, `+1 516*`, no-year birthdays, apostrophes and punctuation, backward and half ranges, `#12` |
+| `test_records_find.py` | every criterion kind and operator, half ranges, FileMaker request order, Omit with empty fields, business and service pickers, blank requests and finds, Record created, constrain/extend/omit/show omitted, tags as found sets, messages, counts, CSV, sorting |
+| `test_records_find_edges.py` | the cases the independent test found: accented letters (ICU and C-locale databases), business ID vs names, times in dates, today's time zone, `+1 516*`, no-year birthdays, apostrophes and punctuation, backward ranges, `#12` |
 | `test_records_tags.py` | export format, one row per number, merge rules, consent blank, no-number records, creation date per import, file name, parity on the sample files |
 | `test_records_store.py` | businesses (IDs, corrections cascade), services, tags (one business, names, history), setup (repeatable, new fields, retyped fields, field names) |
-| `test_records_app.py` | the real app.py with AppTest: database errors, Businesses/Services, New import with business and service, import page, Find (requests, errors, omit), tag creation, tag export, Fields |
+| `test_records_app.py` | the real app.py with AppTest: database errors, Businesses/Services, New import with business and service, import page, Find (boxes, pickers, an Omit request, More criteria, blank find, errors, omit selected), tag creation, tag export, Fields |
 
 Checks before a release: [HANDOFF.md](HANDOFF.md) → Checks.
