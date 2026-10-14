@@ -355,7 +355,7 @@ def test_counts_and_csv(data):
     assert len(lines) == 6 and lines[0].startswith("Record ID,Record created,Business ID,Business,Service,Import #")
     assert lines[1].split(",")[1].startswith(datetime.now(ZoneInfo("America/New_York")).strftime("%m/%d/%Y"))
     assert "'=HYPERLINK" not in csv  # Notes is not a field: not in the CSV
-    assert "09/12/1600" in csv and "10/09/2026 03:45 PM" in csv
+    assert "09/12/1600" in csv and ",10/09/2026," in csv and "03:45 PM" not in csv   # the last visit: a day
 
 
 def test_csv_neutralises_formulas(data):
