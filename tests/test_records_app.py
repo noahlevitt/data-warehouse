@@ -148,10 +148,10 @@ def test_import_page_shows_the_records_and_opens_them_in_find(env):
 
 
 def test_find_with_requests_and_tag_the_found_set(env):
-    """A request typed into the editor finds records; the found set goes into a new tag."""
+    """A criterion typed into a request's box finds records; the found set goes into a new tag."""
     _, rs = env
-    req = {"id": 1, "omit": False, "base": pd.DataFrame({"Field": ["Last name"], "Criterion": ["smith"]})}
-    at = run_page("Find", state={"find_reqs": [req], "find_ver": 0, "find_seq": 1})
+    at = run_page("Find")
+    by_label(at.text_input, "Last name").input("smith")
     button(at, "Find").click().run()
     assert not at.exception, [e.value for e in at.exception]
     assert [m.value for m in at.metric][:2] == ["1", "1"]
@@ -163,10 +163,77 @@ def test_find_with_requests_and_tag_the_found_set(env):
 
 
 def test_find_shows_why_a_criterion_cant_be_read(env):
-    req = {"id": 1, "omit": False, "base": pd.DataFrame({"Field": ["Total visits"], "Criterion": ["lots"]})}
-    at = run_page("Find", state={"find_reqs": [req], "find_ver": 0, "find_seq": 1})
+    at = run_page("Find")
+    by_label(at.text_input, "Total visits").input("lots")
     button(at, "Find").click().run()
     assert any("isn't a number" in e.value for e in at.error)
+
+
+def test_nothing_is_required_a_blank_find_shows_every_record(env):
+    at = run_page("Find")
+    assert not at.error
+    button(at, "Find").click().run()
+    assert not at.error and [m.value for m in at.metric][0] == "2"
+    assert any("Blank find" in c.value for c in at.caption)
+    [found] = [d.value for d in at.dataframe if F.ID_COL in d.value.columns]
+    assert len(found) == 2 and found["Created"].str.match(r"\d\d/\d\d/\d{4} \d\d:\d\d [AP]M").all()
+
+
+def test_a_business_without_one_of_its_services(env):
+    """Pick the business in request 1, then an Omit request with the service: nothing of that service is left."""
+    _, rs = env
+    sid = next(s["id"] for s in rs.list_services() if s["name"] == "Toast export")
+    at = run_page("Find")
+    at.multiselect(key="fq_1_1_biz").set_value(["1001"])
+    button(at, "Find").click().run()
+    assert [m.value for m in at.metric][0] == "2"
+    button(at, "+ Omit request").click().run()
+    assert len([m for m in at.markdown if m.value.startswith("**Request")]) == 2
+    assert at.multiselect(key="fq_1_1_biz").value == ["1001"]           # request 1 kept what was picked
+    at.multiselect(key="fq_1_2_svc").set_value([sid])
+    button(at, "Find").click().run()
+    assert [m.value for m in at.metric][0] == "0"
+    assert any("omit Toast export" in c.value for c in at.caption)
+
+
+def test_find_or_omit_is_always_one_of_the_two(env):
+    """Each request is Find or Omit, never neither (a toggle clicked twice used to turn an Omit into a Find)."""
+    at = run_page("Find")
+    kind = at.radio(key="fq_1_1_kind")
+    assert kind.options == ["Find", "Omit"] and kind.value == "Find"
+
+
+def test_a_typo_in_constrain_keeps_the_found_set(env):
+    """The found set is only replaced once the new step can be read; a blank Constrain changes nothing."""
+    smith = F.find_node([{"omit": False, "criteria": [["f:last_name", "smith"]]}])
+    at = run_page("Find", state={"found": smith, "found_note": "Find"})
+    button(at, "Constrain").click().run()
+    assert any("Fill in something to constrain" in w.value for w in at.warning)
+    assert at.session_state["found"] == smith
+    by_label(at.text_input, "Total visits").input("lots")
+    button(at, "Constrain").click().run()
+    assert any("isn't a number" in e.value and "unchanged" in e.value for e in at.error)
+    assert at.session_state["found"] == smith and [m.value for m in at.metric][0] == "1"
+    by_label(at.text_input, "Total visits").input("")
+    by_label(at.text_input, "First name").input("john")
+    button(at, "Constrain").click().run()
+    assert not at.error and [m.value for m in at.metric][0] == "1"
+
+
+def test_a_more_criteria_row_needs_a_field(env):
+    req = {"id": 1, "omit": False, "base": pd.DataFrame({"Field": [None], "Criterion": ["promo"]})}
+    at = run_page("Find", state={"find_reqs": [req], "find_ver": 0, "find_seq": 1})
+    button(at, "Find").click().run()
+    assert any("choose a Field for 'promo'" in e.value for e in at.error)
+    assert "found" not in at.session_state
+
+
+def test_more_criteria_table(env):
+    """Fields without a box of their own (Full name, Any field, Tag, file columns…) are in the More criteria table."""
+    req = {"id": 1, "omit": False, "base": pd.DataFrame({"Field": ["Full name"], "Criterion": ["john smith"]})}
+    at = run_page("Find", state={"find_reqs": [req], "find_ver": 0, "find_seq": 1})
+    button(at, "Find").click().run()
+    assert [m.value for m in at.metric][0] == "1"
 
 
 def test_omit_selected_and_show_omitted(env):
@@ -178,13 +245,13 @@ def test_omit_selected_and_show_omitted(env):
 
 
 def test_a_prepared_csv_is_for_one_found_set_only(env):
-    """Changing Limit to (or the found set, or the sort) after preparing the CSV asks for a new one: the old file
-    would hold records the page no longer shows."""
+    """Changing the found set or the sort after preparing the CSV asks for a new one: the old file would hold
+    records, or an order, the page no longer shows."""
     at = run_page("Find", state={"found": F.all_records(), "found_note": "All records"})
     button(at, "Prepare CSV").click().run()
     assert at.session_state["found_csv"]["data"].decode("utf-8-sig").count("\n") == 3  # header + 2 records
     assert not [b for b in at.button if b.label.startswith("Prepare CSV")]  # the download is offered instead
-    at.multiselect(key="find_biz").set_value(["1001"]).run()
+    at.selectbox(key="found_sort").select("Last name").run()
     assert [b for b in at.button if b.label.startswith("Prepare CSV")]
 
 
@@ -199,6 +266,9 @@ def test_tag_page_exports_the_numbers(env):
     lines = prepared["data"].decode().splitlines()
     assert lines[0].startswith("phone_number,consent,") and lines[1].startswith("5165550100,,")
     assert prepared["name"].startswith("1001_Smiths_") and prepared["name"].endswith(".csv")
+    # The tag's records table: Record ID (which Remove selected reads) and when each record was created.
+    [records] = [d.value for d in at.dataframe if F.ID_COL in d.value.columns]
+    assert "Created" in records.columns and len(records) == 1
 
 
 def test_fields_page_lists_both_formats(env):
