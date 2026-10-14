@@ -3,7 +3,7 @@
 For whoever picks Customer Records up next: a person, or Claude in a new chat. It records what the code and the
 other documents don't: how changes are made and delivered, the decisions the business made, and what is still open.
 
-**State:** version 1.0.0, the first prototype (see [CHANGELOG.md](CHANGELOG.md)), based on file-converter 0.21.2.
+**State:** version 1.0.1, the first prototype (see [CHANGELOG.md](CHANGELOG.md)), based on file-converter 0.21.2.
 About 1,100 tests. Repository: github.com/noahlevitt/data-warehouse, with its own git history: it started from the
 converter's files, not from its history (section 5).
 Owner: Noah Levitt. Last updated 2026-10-14. Update this file with every release (section 4 in particular).
@@ -62,8 +62,8 @@ change them only when a converter fix is ported in (section 5).
 
 **Delivery** (when the changes can't be pushed directly)
 - Changes go to Noah as a git bundle, `data-warehouse-updateN.bundle`, numbered in order. The repository itself
-  came as `data-warehouse-1.0.0.bundle` (complete, no prerequisites), so the next is `data-warehouse-update1.bundle`;
-  update this line with each bundle.
+  came as `data-warehouse-1.0.0.bundle` (complete, no prerequisites); 1.0.1 came as `data-warehouse-update1.bundle`,
+  so the next is `data-warehouse-update2.bundle`. Update this line with each bundle.
 
   ```bash
   git bundle create ../data-warehouse-updateN.bundle main vX.Y.Z ^vPREVIOUS
@@ -107,6 +107,7 @@ Decided by Noah on 2026-10-14 unless marked otherwise. Don't reverse one without
 | Before tagging (later) | Deduplicate, check that numbers are cell phones, and remove numbers on the Do Not Call list unless within an 18-month established business relationship. Depends on the main system; not built. |
 | Platform | A web app or something launched on the computer, Mac first, Windows too. Built as the converter: a local web app (`./run_local.sh`), Docker for a server. |
 | Repository | A brand-new project and repository, github.com/noahlevitt/data-warehouse, with its own commit history (not file-converter's). |
+| Port | 8502. The file converter keeps running on 8501 on the same computer, so the two must never share a port (1.0.1). |
 
 **Carried over from the converter, not yet confirmed for this project** (stated in the plan on 2026-10-14 and not
 objected to; the converter's handoff asks to confirm each one for a new project): US numbers only (+1 assumed); the
@@ -175,10 +176,10 @@ as patches**, not merged or cherry-picked:
    ```
    Conflicts are marked in the files as in a merge. Expect them where Customer Records changed the converter's
    files: `app.py`, `requirements.txt`, `run_local.*`, `Dockerfile`, `docker-compose.yml`, `.env.example`,
-   `converter/jobs.py`, `schema.py`, `heuristics.py` (ARCHITECTURE.md → Additions to the converter),
-   `tests/conftest.py`, `tests/test_drafts.py`, `scripts/regression/regression.py` (its example),
-   `docs/converter/README.md` (the note at the top). The exact changes:
-   `git diff $(git log -1 --format=%h --grep='(file-converter 0.21.2)') HEAD -- converter`.
+   `.streamlit/config.toml` (keep port 8502 everywhere), `converter/jobs.py`, `schema.py`, `heuristics.py`
+   (ARCHITECTURE.md → Additions to the converter), `tests/conftest.py`, `tests/test_drafts.py`,
+   `scripts/regression/regression.py` (its example), `docs/converter/README.md` (the note at the top).
+   The exact changes: `git diff $(git log -1 --format=%h --grep='(file-converter 0.21.2)') HEAD -- converter`.
 3. Commit as always (one commit per file, e.g. "Port the area code fix from file-converter 0.22.0"), then the
    regression check (the differences are the fix's), the parity check and the whole suite (section 1). Note the
    converter version in CHANGELOG.md and in the overviews that name 0.21.2 (README, ARCHITECTURE,
