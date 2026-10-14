@@ -83,13 +83,14 @@ The column matching, the review page and every conversion rule are the converter
 | Field | Type | From columns such as |
 |---|---|---|
 | Phone | 10-digit US numbers (all of a row's) | Phone, Mobile, Cell, Home Phone, phone2… |
-| First name, Last name | text | First Name, Last Name; a full *Name* / *Customer Name* is split |
+| First name, Last name | text | First Name, Last Name; a whole-name column (*Name*, *Full Name*, *Customer Name*, *Guest*) is split by the converter into first and last word ("Ray, Lisa" too); a whole name in a *First Name* column stays there, and is found by First and Last name (see Finding records) |
 | Email | email (lower-cased) | Email, E-mail |
 | Address, Address 2, City, State, ZIP | text, 2-letter state, 5-digit ZIP | Address, City, State, Zip; a one-line address is split |
 | Total visits | whole number | Visits, Visit Count, Total Orders |
 | Total spent | amount | Total Spend, Lifetime Spend, LTV, Total Sales |
 | First visit / sign-up | date and time | Created At, Sign Up Date, Member Since, First Visit |
-| Last visit / order, Last call, Last text received, Last redemption, Last spin | date and time | as in the converter |
+| Last visit / order | **date only** (a time in the file is dropped, after converting a written zone to the client's) | as in the converter |
+| Last call, Last text received, Last redemption, Last spin | date and time | as in the converter |
 | Last contacted | date and time | **mapped by hand only** (as in the converter) |
 | Birthday, Anniversary | date; 1600 = no year | as in the converter |
 | Consent | true / false | **mapped by hand only** (as in the converter) |
@@ -99,9 +100,13 @@ To add a field, add it to the YAML file and restart the app: its database column
 ## Finding records
 
 A find is one or more **requests**. **Nothing is required**: fill in only what you're looking for, and a Find with
-everything blank shows every record. Each request has a **Business** picker and a **Services** picker (one or more
-of each; empty = any), a box for **Record ID**, **Record created** and every record field, and *More criteria* for
-the rest. In one request a record must match **everything filled in** (AND); several requests **add up** (OR); an
+everything blank shows every record. Each request shows what is searched most: **Business** and **Services**
+pickers (one or more of each; empty = any) and **Last visit / order**, then **Phone**, **First name** and **Last
+name**. Every other field is one click away under **＋ Add a field** (and taken off again with its ✕): Full name,
+Email, address, City, State, ZIP, Total visits, Total spent, Record created (the import date), Birthday,
+Anniversary, the other dates, Any field, Consent, Phone problem, Tag, Import #, File name, Record ID, File row and
+the files' own columns. In one request a record must match **everything filled in** (AND); several requests **add
+up** (OR); an
 **Omit** request removes what it matches from what the requests above it found (FileMaker's rules: requests are
 applied top to bottom; an Omit as the first request starts from all records; a blank request is ignored). Enter in
 any box is **Find**. Then:
@@ -111,9 +116,11 @@ any box is **Find**. Then:
 - **Show all** — every record (the same as a blank Find).
 
 Every record has its own **Record ID** and its **Record created** date and time (when its import stored it), shown
-in the found set and searchable like any number and date. *More criteria*: *Any field* (every value, cleaned and as
-written), *Full name*, *Tag*, *Phone problem*, *Import #*, *File name*, *File row* and *Column: …* for each column of
-the imported files.
+in the found set and searchable like any number and date. **Last visit / order is a date only**: search it by days
+(`1/1/2026...1/20/2026`). **Names**: a file whose *First Name* column holds whole names leaves them in First name
+with no Last name ("Lisa Marie Ray"). First name and Last name also read such a name as split at its first space
+(Lisa / Marie Ray), or at its comma ("Ray, Lisa": Ray is the last name), so First name `lisa` and Last name `ray`
+both find it; `=` and `*` look at the stored names only. *Full name* searches first and last together (`lisa ray`).
 
 | Type | Criterion | Finds |
 |---|---|---|
@@ -130,7 +137,7 @@ the imported files.
 | Number | `5`, `>5`, `<=100`, `10...20`, `$1,200`, `#12` | values, comparisons, ranges (inclusive, the smaller first) |
 | | `...20` / `10...` | up to and including 20 / 10 or more |
 | Date | `10/9/2026`, `10/2026`, `2026`, `Oct 9 2026`, `//` | that day (the whole day), month, year, today (in the app's time zone) |
-| | `10/9/2026 3:45 PM`, `>10/9/2026 9:00 AM` | that minute, after it (date-and-time fields) |
+| | `10/9/2026 3:45 PM`, `>10/9/2026 9:00 AM` | that minute, after it (date-and-time fields such as Record created; a date-only field like Last visit takes the day) |
 | | `1/1/2025...1/1/2026`, `<10/1/2026`, `>=10/1/2026` | ranges (inclusive, the earlier first), before, on or after |
 | | `...1/1/2026` / `1/1/2025...` | up to and including 1/1/2026 / from 1/1/2025 on (also `...2025`, `10/2026...`) |
 | | `10/9`, `Oct 9`, `10/*`, `October`, `12/15...1/15` | month and day in **any year** (birthdays), a month, a span over the new year |
@@ -151,10 +158,11 @@ unknown").
 
 Typical finds: **a business** — pick it under Business, Find. **A business and one or more of its services** — pick
 the business and the services in one request. **A business without one service** — pick the business, click
-*+ Omit request* and pick the service there. **A phone number anywhere** — Phone `516-555-0100` alone. **Lapsed
-guests of a business** — the business and Last visit / order `...6/30/2026`. **Signed up in 2025** — First visit /
-sign-up `1/1/2025...12/31/2025`. **Everyone in Bayside or Flushing** — two requests, City `bayside` and City
-`flushing`. **October birthdays** — Birthday `10/*`.
+*+ Omit request* and pick the service there. **Visited in a date range** — Last visit / order
+`1/1/2026...1/20/2026`. **A phone number anywhere** — Phone `516-555-0100` alone. **Lapsed guests of a business** —
+the business and Last visit / order `...6/30/2026`. **Imported this month** — Add a field → Record created,
+`10/2026`. **Everyone in Bayside or Flushing** — two requests, City `bayside` and City `flushing` (Add a field →
+City). **October birthdays** — Add a field → Birthday, `10/*`.
 
 ## Tags and exports
 
