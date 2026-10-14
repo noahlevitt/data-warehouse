@@ -42,6 +42,12 @@ Retention: :meth:`ImportRunner.purge` deletes the stored files of finished impor
 
 Main entry points: :class:`ImportRunner` (web app, one per server process) and :func:`run_import` (also called
 directly and synchronously by the CLI, so CLI imports appear in the web app's Imports list too).
+
+Sink (added for Customer Records 1.0.0): an optional object handed to :class:`ImportRunner` / :func:`run_import`
+that stores the converted rows somewhere else - Customer Records puts them in its PostgreSQL database
+(``records.importer.RecordSink``). With a sink, ``sink.save(...)`` replaces the number history step and its returned
+dict is added to the import's summary; ``sink.discard(import_id)`` undoes it when the import then ends cancelled or
+failed. Without a sink (the converter), nothing changes.
 """
 
 from __future__ import annotations
@@ -114,7 +120,7 @@ class ProgressTracker:
                 raise ImportCancelled()
 
 
-def run_import(store: Store, import_id: int) -> ImportRecord:
+def run_import(store: Store, import_id: int, sink=None) -> ImportRecord:
     """Run one import to completion (synchronously). The outcome is recorded on the import (see Raises).
 
     Steps and the progress range each one reports:
@@ -133,6 +139,9 @@ def run_import(store: Store, import_id: int) -> ImportRecord:
     Args:
         store: The shared :class:`~converter.storage.Store`.
         import_id: Id of an import created with ``Store.create_import``.
+        sink: Optional (see the module docstring): at 0.97 ``sink.save(import_id, rec, read_result, result,
+            schema)`` runs instead of recording the numbers; an exception from it fails the import, and
+            ``sink.discard(import_id)`` is called whenever the import ends cancelled or failed.
 
     Returns:
         The import record as stored after the run (status completed / failed / cancelled), or the unchanged
@@ -197,34 +206,45 @@ def run_import(store: Store, import_id: int) -> ImportRecord:
         (folder / files["summary"]).write_bytes(
             write_summary(result, schema, rec.filename, rec.username, __version__))
         result.audit.to_parquet(folder / files["audit"], index=False)
-        track(0.97, "Recording numbers", force=True)
-        try:
-            numberlog.record(store, import_id, result.audit, schema, rr.df, rec.mapping)
-        except Exception:  # noqa: BLE001 - the import itself is fine; numberlog.backfill retries on the next start
-            log.exception("Recording the numbers of import %s failed", import_id)
+        extra_summary = {}
+        if sink is not None:
+            # Customer Records: the rows go to its database. A failure here fails the import (except below).
+            track(0.97, "Saving records", force=True)
+            extra_summary = sink.save(import_id, rec, rr, result, schema) or {}
+        else:
+            track(0.97, "Recording numbers", force=True)
+            try:
+                numberlog.record(store, import_id, result.audit, schema, rr.df, rec.mapping)
+            except Exception:  # noqa: BLE001 - the import itself is fine; numberlog.backfill retries on next start
+                log.exception("Recording the numbers of import %s failed", import_id)
         track(0.99, "Finishing", force=True)
         # The summary dict is stored as JSON on the import row; failed values are capped at 500 per field to keep
         # the row small.
         summary = result.summary_dict()
+        summary.update(extra_summary)
         summary["fill_rates"] = result.fill_rates
         summary["failed_values"] = {k: v[:500] for k, v in result.failed_values.items()}
         summary["warnings"] = rr.warnings
         store.complete_import(import_id, summary, files)
     except ImportCancelled:
-        _forget_numbers(store, import_id)
+        _forget_numbers(store, import_id, sink)
         store.finish_import(import_id, "cancelled", stage="Cancelled by user")
     except Exception as exc:  # record the failure for the user; full trace goes to the server log
         log.error("Import %s failed:\n%s", import_id, traceback.format_exc())
-        _forget_numbers(store, import_id)
+        _forget_numbers(store, import_id, sink)
         store.finish_import(import_id, "failed", error=f"{type(exc).__name__}: {exc}", stage="Failed")
     return store.get_import(import_id)
 
 
-def _forget_numbers(store: Store, import_id: int) -> None:
+def _forget_numbers(store: Store, import_id: int, sink=None) -> None:
     """Remove the numbers recorded for an import that then ended cancelled or failed (a cancel noticed, or an error,
-    after the numbers were recorded): nothing of it was imported. Never raises."""
+    after the numbers were recorded): nothing of it was imported. With a sink, ``sink.discard`` removes what it
+    saved instead. Never raises."""
     try:
-        store.log_numbers(import_id, [])
+        if sink is not None:
+            sink.discard(import_id)
+        else:
+            store.log_numbers(import_id, [])
     except Exception:  # noqa: BLE001 - Store.number_history also leaves out imports that didn't complete
         log.exception("Removing the recorded numbers of import %s failed", import_id)
 
@@ -240,7 +260,7 @@ class ImportRunner:
     """
 
     def __init__(self, store: Store, workers: int = 2, retention_days: int = 30, record_days: int = 0,
-                 backfill: bool = True):
+                 backfill: bool = True, sink=None):
         """Start the pool, recover from a previous run and purge old files.
 
         Args:
@@ -252,6 +272,7 @@ class ImportRunner:
                 less = keep forever).
             backfill: record the numbers of earlier imports that have none recorded yet (``numberlog.backfill``),
                 in a background thread so the server starts right away.
+            sink: passed to every :func:`run_import` (Customer Records' database; see the module docstring).
 
         Side effects: marks every import still "queued"/"running" in the database as "interrupted" — they belonged
         to a previous server process whose threads are gone — logs a warning with the count, runs :meth:`purge`
@@ -260,6 +281,7 @@ class ImportRunner:
         self.store = store
         self.retention_days = retention_days
         self.record_days = record_days
+        self.sink = sink
         self.pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="import")
         self._lock = threading.Lock()  # serializes purge() runs
         self._last_purge = 0.0
@@ -285,7 +307,7 @@ class ImportRunner:
         Returns immediately; the result is recorded on the import by :func:`run_import` (the returned Future is
         not kept). Hooking the hourly purge onto submissions avoids running a separate timer thread.
         """
-        self.pool.submit(run_import, self.store, import_id)
+        self.pool.submit(run_import, self.store, import_id, self.sink)
         if time.monotonic() - self._last_purge > 3600:
             self.purge()
 
