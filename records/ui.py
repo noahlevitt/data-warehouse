@@ -7,8 +7,8 @@ the functions here for the new pages, passing a :class:`Ctx` with everything the
 signed-in user, how to open another page). Like ``app.py`` itself, every function redraws its page from scratch on
 each click (Streamlit reruns the script); what must survive a rerun is kept in ``st.session_state``:
 
-* Find: ``find_reqs`` (the requests on screen: ids, Find or Omit, the empty More criteria table each starts
-  with; what is typed lives in the widgets, keyed ``fq_<find_ver>_<request id>_…``), ``find_ver`` (bumped by Clear
+* Find: ``find_reqs`` (the requests on screen: ids, Find or Omit, the fields added with Add a field; what is typed
+  lives in the widgets, keyed ``fq_<find_ver>_<request id>_<field key>``), ``find_ver`` (bumped by Clear
   to empty every box), ``found`` (the found set, a records.find node), ``found_note`` (how it was made),
   ``found_csv`` (a prepared CSV, with the found set and sort it was made for).
 * Tags: ``tag_export_<id>`` (a prepared export, with the tag's last change time so a changed tag is prepared again).
@@ -35,13 +35,12 @@ from converter.schema import TargetSchema
 from . import find as F
 from .criteria import SYNTAX
 from .db import Database
-from .fields import FORM_KEYS, PICKER_KEYS, FindField, find_fields
+from .fields import PICKER_KEYS, FindField, find_fields
 from .store import RecordStore, StoreError
 from .tags import export_file, export_filename, export_table
 
 ss = st.session_state
 
-COL_FIELD, COL_CRIT = "Field", "Criterion"
 # Fields shown in the found-set table unless the person picks others.
 DEFAULT_SHOW = ["first_name", "last_name", "email", "city", "state", "transactions_last", "birthday",
                 "total_visits", "total_spent"]
@@ -89,22 +88,64 @@ def go_find(ctx: Ctx, node: dict, note: str) -> None:
 # ---------------------------------------------------------------------------------------------------- Find
 
 # Example shown in an empty box, by kind of field (records.criteria has the whole syntax).
-PLACEHOLDER = {"date": "e.g. 1/1/2025...1/1/2026", "created": "e.g. 10/14/2026 or 10/1/2026...",
-               "number": "e.g. >5 or 10...20", "phone": "e.g. 516 555 0100 or 516*", "bool": "yes / no"}
+PLACEHOLDER = {"date": "e.g. 1/1/2026...1/20/2026", "created": "e.g. 10/14/2026 or 10/1/2026...",
+               "number": "e.g. >5 or 10...20", "phone": "e.g. 516 555 0100", "bool": "yes / no"}
 TIP = {"text": "A word it starts with (smith), =smith for the whole word, \"main st\" anywhere, = empty, * any.",
-       "date": "10/9/2026 · 10/2026 · 2026 · 1/1/2025...1/1/2026 · ...1/1/2026 up to that day · 1/1/2025... from "
+       "date": "10/9/2026 · 10/2026 · 2026 · 1/1/2026...1/20/2026 · ...1/1/2026 up to that day · 1/1/2025... from "
                "that day on · <, <=, >, >= · = empty · * any",
        "number": "5 · >5 · <=100 · 10...20 · ...20 up to 20 · 10... 10 or more · = empty · * any",
        "phone": "Any formatting; part of a number (5550100) or its start (516*); = no usable number; * has one.",
        "bool": "yes or no; = empty; * any value"}
 TIP["created"] = TIP["date"]
+TIP["first"] = TIP["last"] = TIP["text"] + " A whole name typed into First name counts as first + last."
+# What the Add a field menu says about a field when its name alone doesn't (shown when pointing at it).
+MENU_HELP = {"name": "First and last name together, however the file split them",
+             "created": "The day the record was imported"}
+# The menu's four columns: which groups of find_layout go in each.
+MENU_COLUMNS = [["Name, contact & address"], ["Visits & spend", "Columns of the files"], ["Dates"], ["Other"]]
+
+
+@dataclass
+class FindLayout:
+    """Which boxes a request shows (from the record fields, so a changed records_schema.yaml still works)."""
+
+    main: list[FindField]                 # next to Business and Services: the last visit
+    second: list[FindField]               # the row below: phone, first name, last name
+    groups: dict[str, list[FindField]]    # the Add a field menu, by group
+    columns: list[FindField]              # the files' own columns (Column: …), picked from a list in the menu
+
+
+def find_layout(schema: TargetSchema, fields: list[FindField]) -> FindLayout:
+    """The Find page's layout: the most used fields always shown, the others one click away (Add a field)."""
+    by_key = {f.key: f for f in fields}
+    last_visit = next((f"f:{f.name}" for f in schema.fields if f.generic_date == "default"), None)
+    phone = next((f"f:{f.name}" for f in schema.fields if f.type == "phone"), None)
+    main = [by_key[k] for k in [last_visit] if k in by_key]
+    second = [by_key[k] for k in [phone, "f:first_name", "f:last_name"] if k in by_key]
+    shown = {f.key for f in main + second} | PICKER_KEYS
+    groups: dict[str, list[FindField]] = {"Name, contact & address": [], "Visits & spend": [], "Dates": [],
+                                          "Other": []}
+    for f in fields:
+        if f.key in shown or f.kind == "column":
+            continue
+        if f.kind in ("text", "name", "first", "last") and (f.key.startswith("f:") or f.key == "name"):
+            groups["Name, contact & address"].append(f)
+        elif f.kind == "number" and f.key.startswith("f:"):
+            groups["Visits & spend"].append(f)
+        elif f.kind in ("date", "created"):
+            groups["Dates"].append(f)
+        else:
+            groups["Other"].append(f)
+    # Record created (the import date) first, then birthday and anniversary, then the activity dates.
+    groups["Dates"].sort(key=lambda f: (f.kind != "created", f.no_year_value is None))
+    return FindLayout(main, second, {g: fs for g, fs in groups.items() if fs},
+                      [f for f in fields if f.kind == "column"])
 
 
 def _new_request(omit: bool = False) -> dict:
-    """A new request on screen: an id (for widget keys), Find or Omit, and its empty More criteria table."""
+    """A new request on screen: an id (for widget keys), Find or Omit, and the fields added to it (Add a field)."""
     ss.find_seq = ss.get("find_seq", 0) + 1
-    return {"id": ss.find_seq, "omit": omit,
-            "base": pd.DataFrame({COL_FIELD: pd.Series(dtype="object"), COL_CRIT: pd.Series(dtype="object")})}
+    return {"id": ss.find_seq, "omit": omit, "extra": []}
 
 
 def _reset_requests() -> None:
@@ -112,11 +153,21 @@ def _reset_requests() -> None:
     ss.find_ver = ss.get("find_ver", 0) + 1
 
 
+def _box(where, f: FindField, key: str) -> str:
+    """One field's box in a request; returns what is typed."""
+    example = "e.g. 10/* (October) or 10/15" if f.no_year_value is not None else PLACEHOLDER.get(f.kind, "")
+    return where.text_input(f.label, key=key, placeholder=example,
+                            help=TIP.get(f.kind, TIP["text"]) + (f" — {f.help}" if f.help else ""))
+
+
 def page_find(ctx: Ctx) -> None:
     """Page "Find": find requests (FileMaker style), the found set, its records, and adding it to a tag.
 
-    The requests are one form: typing doesn't rerun the page, and Enter in any box is the Find button (the form's
-    first button). Nothing is required; a Find with everything blank shows every record.
+    Each request shows what is searched most: Business, Services and Last visit, then Phone, First name and Last
+    name; every other field is added to a request from its **＋ Add a field** menu (and taken off with ✕). The
+    requests are one form: typing doesn't rerun the page, and Enter in any box is the Find button (the form's first
+    button); the menu's buttons submit the form too, so what is typed is kept. Nothing is required; a Find with
+    everything blank shows every record.
     """
     st.header("Find records")
     totals = ctx.records.totals()
@@ -126,19 +177,18 @@ def page_find(ctx: Ctx) -> None:
     services = ctx.records.list_services()
     fields = find_fields(ctx.schema, ctx.records.columns_seen())
     by_key = {f.key: f for f in fields}
-    boxes = [by_key[k] for k in FORM_KEYS] + [f for f in fields if f.key.startswith("f:")]
-    extra = {f.label: f for f in fields
-             if f.key not in PICKER_KEYS and f.key not in FORM_KEYS and not f.key.startswith("f:")}
+    layout = find_layout(ctx.schema, fields)
     if "find_reqs" not in ss:
         _reset_requests()
 
+    # The Add a field menu that was just used is closed on this run (a menu stays open after its buttons by itself,
+    # covering the box just added); its open state can only be set before it is drawn.
+    close_menu = ss.pop("find_close_menu", None)
     requests: list[dict] = []
-    problems: list[str] = []
+    add: tuple[int, str] | None = None
+    drop: tuple[int, str] | None = None
+    remove = None
     with st.form("find_form"):
-        st.markdown("**Find requests** — fill in only what you're looking for; **nothing is required**, and a Find "
-                    "with everything blank shows every record. A record must match everything filled in within a "
-                    "request; several requests add up (OR); an **Omit** request removes what it matches from the "
-                    "requests above it. Enter in any box = **Find**.")
         b = st.columns(5)
         do_find = b[0].form_submit_button("Find", type="primary", width="stretch",
                                           help="A new found set from these requests (blank = every record)")
@@ -149,9 +199,12 @@ def page_find(ctx: Ctx) -> None:
         do_all = b[3].form_submit_button("Show all", width="stretch", help="Every record")
         do_clear = b[4].form_submit_button("Clear", width="stretch",
                                            help="Empty the requests (the found set stays)")
-        remove = None
+        st.caption("Fill in only what you're looking for — nothing is required, and a Find with everything blank "
+                   "shows every record. Enter in any box = **Find**. Several requests add up; an **Omit** request "
+                   "removes what it matches.")
         for n, req in enumerate(list(ss.find_reqs)):
             rkey = f"fq_{ss.find_ver}_{req['id']}"
+            criteria: list[list[str]] = []
             with st.container(border=True):
                 h1, h2, h3 = st.columns([1.2, 2.2, 0.8], vertical_alignment="bottom")
                 h1.markdown(f"**Request {n + 1}**")
@@ -161,7 +214,7 @@ def page_find(ctx: Ctx) -> None:
                 req["omit"] = kind == "Omit"
                 if len(ss.find_reqs) > 1 and h3.form_submit_button("Remove", key=f"{rkey}_rm", width="stretch"):
                     remove = req["id"]
-                c1, c2 = st.columns(2)
+                c1, c2, c3 = st.columns([2.2, 2.2, 1.6], vertical_alignment="bottom")
                 biz = c1.multiselect(
                     "Business", [x["id"] for x in businesses], key=f"{rkey}_biz",
                     format_func=lambda i: next((_biz_label(x) for x in businesses if x["id"] == i), i),
@@ -175,39 +228,43 @@ def page_find(ctx: Ctx) -> None:
                     placeholder="Any service" if services else "No services yet", select_all=False,
                     help="One or more services. Empty = any service. To leave a service out, pick it in an Omit "
                          "request.")
-                criteria: list[list[str]] = []
-                # Request 1 shows every box; later requests (often just a business or a service to omit) keep
-                # theirs folded unless something is typed in them, so the found set isn't pushed far down.
-                filled = sum(1 for f in boxes if str(ss.get(f"{rkey}_{f.key}") or "").strip())
-                with st.expander("Fields" + (f" — {filled} filled in" if filled else ""),
-                                 expanded=n == 0 or filled > 0):
-                    cols = st.columns(4)
-                    for i, f in enumerate(boxes):
-                        text = cols[i % 4].text_input(
-                            f.label, key=f"{rkey}_{f.key}", placeholder=PLACEHOLDER.get(f.kind, ""),
-                            help=TIP.get(f.kind, TIP["text"]) + (f" — {f.help}" if f.help else ""))
-                        if text.strip():
-                            criteria.append([f.key, text])
-                with st.expander("More criteria: Any field, Full name, Tag, Import #, File name, file columns…"):
-                    more = st.data_editor(
-                        req["base"], key=f"{rkey}_more", num_rows="dynamic", hide_index=True, width="stretch",
-                        column_config={
-                            COL_FIELD: st.column_config.SelectboxColumn(options=list(extra), width="medium",
-                                                                        help="What to search"),
-                            COL_CRIT: st.column_config.TextColumn(width="large", help="What to look for (see How "
-                                                                                      "to search below)"),
-                        })
-                for _, row in more.iterrows():
-                    label, text = row.get(COL_FIELD), row.get(COL_CRIT)
-                    if not (isinstance(text, str) and text.strip()):
-                        continue
-                    if not (isinstance(label, str) and label):   # an empty cell is NaN or None, not ""
-                        problems.append(f"Request {n + 1}, More criteria: choose a Field for '{text.strip()}'.")
-                    else:
-                        f = extra.get(label)
-                        criteria.append([f.key if f else f"missing:{label}", text])
-                requests.append({"omit": req["omit"], "businesses": list(biz), "services": list(svc),
-                                 "criteria": criteria})
+                for f in layout.main:
+                    criteria.append([f.key, _box(c3, f, f"{rkey}_{f.key}")])
+                cols = st.columns(3)
+                for i, f in enumerate(layout.second):
+                    criteria.append([f.key, _box(cols[i % 3], f, f"{rkey}_{f.key}")])
+                added = [by_key[k] for k in req["extra"] if k in by_key]
+                if added:
+                    cols = st.columns(3)
+                    for i, f in enumerate(added):
+                        box, x = cols[i % 3].columns([7, 1], vertical_alignment="bottom")
+                        criteria.append([f.key, _box(box, f, f"{rkey}_{f.key}")])
+                        if x.form_submit_button("", icon=":material/close:", key=f"{rkey}_drop_{f.key}",
+                                                help=f"Take {f.label} off this request"):
+                            drop = (req["id"], f.key)
+                menu_key = f"{rkey}_menu"
+                if close_menu == menu_key:
+                    ss[menu_key] = False
+                with st.popover("Add a field", icon=":material/add:", key=menu_key, on_change="rerun"):
+                    mcols = st.columns(len(MENU_COLUMNS))
+                    for mc, groups in zip(mcols, MENU_COLUMNS):
+                        for group in groups:
+                            if group == "Columns of the files" and layout.columns:
+                                mc.markdown(f"**{group}**")
+                                pick = mc.selectbox("Column", [f.key for f in layout.columns],
+                                                    key=f"{rkey}_colpick", label_visibility="collapsed",
+                                                    format_func=lambda k: by_key[k].label.removeprefix("Column: "))
+                                if mc.form_submit_button("Add this column", key=f"{rkey}_addcol",
+                                                         type="tertiary") and pick:
+                                    add = (req["id"], pick)
+                            for f in layout.groups.get(group, []):
+                                if f is layout.groups[group][0]:
+                                    mc.markdown(f"**{group}**")
+                                if mc.form_submit_button(f.label, key=f"{rkey}_add_{f.key}", type="tertiary",
+                                                         help=MENU_HELP.get(f.key), disabled=f.key in req["extra"]):
+                                    add = (req["id"], f.key)
+            requests.append({"omit": req["omit"], "businesses": list(biz), "services": list(svc),
+                             "criteria": [[k, t] for k, t in criteria if t.strip()]})
         a = st.columns(5)
         add_find = a[0].form_submit_button("+ Request", width="stretch", help="Add a request (OR)")
         add_omit = a[1].form_submit_button("+ Omit request", width="stretch",
@@ -224,14 +281,21 @@ def page_find(ctx: Ctx) -> None:
     if add_find or add_omit:
         ss.find_reqs.append(_new_request(omit=add_omit))
         st.rerun()
+    if add or drop:
+        rid, key = add or drop
+        req = next(r for r in ss.find_reqs if r["id"] == rid)
+        if add and key not in req["extra"]:
+            req["extra"].append(key)
+            ss.find_close_menu = f"fq_{ss.find_ver}_{rid}_menu"
+        if drop:
+            req["extra"] = [k for k in req["extra"] if k != key]
+            ss.pop(f"fq_{ss.find_ver}_{rid}_{key}", None)
+        st.rerun()
 
     step = None
     if (do_constrain or do_extend) and F.blank(requests):
         st.warning(f"Fill in something to {'constrain' if do_constrain else 'extend'} the found set with; it is "
                    "unchanged. (A blank **Find** shows every record.)")
-    elif problems and (do_find or do_constrain or do_extend):
-        for msg in problems:
-            st.error(msg)
     elif do_find:
         step = F.find_node(requests), _describe(requests, by_key, services)
     elif do_constrain:
