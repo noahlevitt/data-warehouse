@@ -120,10 +120,11 @@ def test_apostrophes_and_punctuation(data):
     assert names(data, "f:last_name", "c++") == ["Pat"]         # punctuation ignored: words starting with c
 
 
-def test_backward_and_half_ranges_say_so(data):
+def test_backward_ranges_say_so(data):
+    """(Half ranges, "5..." and "...5", were refused here until 1.1.0; they now mean "5 or more" / "up to 5".)"""
     for key, text, msg in [("f:transactions_last", "12/31/2026...1/1/2026", "backwards"),
                            ("f:total_visits", "5...1", "backwards"), ("f:last_name", "m...a", "backwards"),
-                           ("f:total_visits", "5...", "both sides"), ("f:total_visits", "<", "number"),
+                           ("f:total_visits", "...", "before or after"), ("f:total_visits", "<", "number"),
                            ("f:transactions_last", "<", "date after"), ("f:total_visits", "NaN", "isn't a number"),
                            ("f:total_visits", "Infinity", "isn't a number")]:
         with pytest.raises(F.FindError, match=msg):
@@ -144,3 +145,42 @@ def test_date_token_with_time():
     with pytest.raises(CriterionError):
         date_token("13/13/2026")
     assert Params().today == date.today()
+
+
+# ---------------------------------------------------------------- found by the independent test of 1.1.0
+
+def test_ellipsis_and_two_dots_are_the_range_operator(data):
+    """Phones and Macs turn ... into one character (…); .. is read the same; four dots are refused."""
+    up_to = names(data, "f:transactions_last", "...10/8/2026")
+    assert up_to == ["Sean"]
+    assert names(data, "f:transactions_last", "…10/8/2026") == up_to
+    assert names(data, "f:transactions_last", "..10/8/2026") == up_to
+    assert names(data, "f:transactions_last", "10/9/2026…") == ["José", "Zoë"]
+    assert names(data, "f:last_name", "m…o") == ["José", "Sean"]
+    assert names(data, "any", '"…"') == []                       # in quotes it is just a character
+    with pytest.raises(F.FindError, match="three dots"):
+        names(data, "f:last_name", "a....c")
+
+
+def test_a_text_range_takes_in_everything_starting_with_its_upper_end(data):
+    """m...o is M through O: O'Brien is in, though "o'brien" sorts after "o"."""
+    assert names(data, "f:last_name", "m...o") == ["José", "Sean"]
+    assert names(data, "f:last_name", "...o") == ["José", "Pat", "Sean", "Zoë"]
+    assert names(data, "name", "...sean") == ["Ali", "José", "Pat", "Sean"]   # "sean o'brien" starts with sean
+
+
+def test_ranges_within_one_day_or_month_are_not_backwards(data):
+    assert names(data, "f:transactions_last", "10/9/2026 9:00 AM...10/9/2026") == ["José", "Zoë"]
+    assert names(data, "f:transactions_last", "10/2026...2026") == ["José", "Sean", "Zoë"]
+    assert names(data, "f:transactions_last", "10/9/2026...10/2026") == ["José", "Zoë"]
+
+
+def test_values_out_of_range_give_a_message_not_an_error_page(data):
+    for key, text, msg in [("f:transactions_last", "12/31/9999", "between 1 and 9998"),
+                           ("f:transactions_last", ">12/31/9999", "between 1 and 9998"),
+                           ("f:transactions_last", "...12/31/9999", "between 1 and 9998"),
+                           ("f:total_visits", "1e1000000", "too large"), ("record", "1e-1000000", "too large"),
+                           ("f:transactions_last", "9999", "between 1 and 9998"),
+                           ("f:phone_number", "516...", "range"), ("f:phone_number", "+1", "digits after")]:
+        with pytest.raises(F.FindError, match=msg):
+            names(data, key, text)
