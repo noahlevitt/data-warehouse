@@ -3,7 +3,7 @@
 For whoever picks Customer Records up next: a person, or Claude in a new chat. It records what the code and the
 other documents don't: how changes are made and delivered, the decisions the business made, and what is still open.
 
-**State:** version 1.0.1, the first prototype (see [CHANGELOG.md](CHANGELOG.md)), based on file-converter 0.21.2.
+**State:** version 1.0.2, the first prototype (see [CHANGELOG.md](CHANGELOG.md)), based on file-converter 0.21.2.
 About 1,100 tests. Repository: github.com/noahlevitt/data-warehouse, with its own git history: it started from the
 converter's files, not from its history (section 5).
 Owner: Noah Levitt. Last updated 2026-10-14. Update this file with every release (section 4 in particular).
@@ -62,8 +62,9 @@ change them only when a converter fix is ported in (section 5).
 
 **Delivery** (when the changes can't be pushed directly)
 - Changes go to Noah as a git bundle, `data-warehouse-updateN.bundle`, numbered in order. The repository itself
-  came as `data-warehouse-1.0.0.bundle` (complete, no prerequisites); 1.0.1 came as `data-warehouse-update1.bundle`,
-  so the next is `data-warehouse-update2.bundle`. Update this line with each bundle.
+  came as `data-warehouse-1.0.0.bundle` (complete, no prerequisites); 1.0.1 came as `data-warehouse-update1.bundle`
+  and 1.0.2 as `data-warehouse-update2.bundle`, so the next is `data-warehouse-update3.bundle`. Update this line
+  with each bundle.
 
   ```bash
   git bundle create ../data-warehouse-updateN.bundle main vX.Y.Z ^vPREVIOUS
@@ -147,6 +148,10 @@ Customer Records (the repository is `data-warehouse`), and version 1.0.0.
   locale); Business `1001` also finding "1001 Nights Cafe"; times in date criteria ignored; `//` on the server's
   clock; `+1 516*` finding nothing; no-year birthdays in "born before" finds; ’ vs '; backward ranges finding
   nothing silently. Smaller points it raised are documented (KNOWN_ISSUES #23–25, punctuation in the README).
+- **The same jump is in the file converter.** Its New import page has the same two mapping tables, which jump back
+  to their first row after every edit (reported here on 1.0.1, fixed in 1.0.2). The fix is `height="content"` on
+  both `st.data_editor` calls in `app.py` (they get a new key on every edit, so a table scrolled inside itself
+  loses its position); `tests/test_mapping_tables.py` checks it. Not yet done in file-converter.
 - Limits known and accepted: [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
 ## 5. Taking fixes from the file converter
