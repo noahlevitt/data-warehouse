@@ -51,7 +51,9 @@ shows every record. Each **request** has:
   Consent, Phone problem, Tag, Import #, File name, Record ID, File row, and the files' own columns. A click adds
   its box to the request; the box's ✕ takes it off. What you typed elsewhere stays.
 
-Leave a box empty to ignore it.
+Leave a box empty to ignore it. Type **`*`** alone to find the records where that field has a value, or **`=`**
+alone for the records where it is blank — in any box (Phone `=`: no usable number; Tag `=`: in no tag). Typed
+with anything else they keep their usual meaning (`sm*th`, `=smith`).
 
 Then:
 
