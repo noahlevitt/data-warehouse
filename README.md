@@ -122,6 +122,11 @@ with no Last name ("Lisa Marie Ray"). First name and Last name also read such a 
 (Lisa / Marie Ray), or at its comma ("Ray, Lisa": Ray is the last name), so First name `lisa` and Last name `ray`
 both find it; `=` and `*` look at the stored names only. *Full name* searches first and last together (`lisa ray`).
 
+**`*` alone** in any box finds the records where that field has a value, **`=` alone** those where it is blank
+(Phone `=`: no usable number; Tag `=`: in no tag; a file's column `=`: also records from files without it; a value
+the import couldn't read counts as blank). With anything else typed, `*` is a wildcard and `=` means the whole
+word.
+
 | Type | Criterion | Finds |
 |---|---|---|
 | Text | `smith` | a word starting with smith (Smith, Smithson — not Goldsmith); upper/lower case never matters, also for Å, Ó, Ñ |
