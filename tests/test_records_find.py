@@ -4,7 +4,8 @@ The records come from two imports (two businesses, two services) run through the
 then searches them as the Find page does.
 """
 
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -54,8 +55,13 @@ def data(pg_server, records_schema, tmp_path_factory):
     drop_database(pg_server, url)
 
 
-def req(*crit, omit=False):
-    return {"omit": omit, "criteria": [list(c) for c in crit]}
+def req(*crit, omit=False, businesses=(), services=()):
+    return {"omit": omit, "businesses": list(businesses), "services": list(services),
+            "criteria": [list(c) for c in crit]}
+
+
+def service_id(data, name):
+    return next(s["id"] for s in data[0].list_services() if s["name"] == name)
 
 
 def names(data, *requests, node=None, **kw):
@@ -108,7 +114,7 @@ def test_emails_and_apostrophes_can_be_typed_as_they_are(data):
 
 
 def test_text_ranges_and_comparisons(data):
-    assert one(data, "f:city", "h...m") == ["Mary O'Brien"]
+    assert one(data, "f:city", "h...m") == ["Ann Lee", "Mary O'Brien"]   # H through M: Hoboken and Mineola
     assert one(data, "f:state", ">=ny") == ["Ann Goldsmith", "Ann Lee", "John Smith", "Johnny Smithson"]
 
 
@@ -174,9 +180,29 @@ def test_birthdays_by_month_and_day_in_any_year(data):
     assert one(data, "f:birthday", ">1/1/1950") == ["Ann Lee", "Johnny Smithson"]
 
 
-def test_today_and_imported_on(data):
+def test_today_and_record_created(data):
+    """Every record has its ID and its creation time (when its import stored it), searchable like any date."""
     assert one(data, "f:transactions_last", "//") == []
-    assert len(one(data, "imported", date.today().strftime("%m/%d/%Y"))) == 7
+    today = datetime.now(ZoneInfo("America/New_York")).strftime("%m/%d/%Y")
+    assert len(one(data, "created", today)) == 7
+    assert len(one(data, "created", "...12/31/2099")) == 7 and one(data, "created", "...1/1/2020") == []
+    assert len(one(data, "created", "1/1/2020...")) == 7
+
+
+def test_half_ranges_up_to_and_from(data):
+    """...X = up to and including X; X... = from X on (dates, month/day, numbers, text, business IDs)."""
+    assert one(data, "f:transactions_last", "...10/1/2026") == ["Ann Goldsmith", "John Smith", "Johnny Smithson",
+                                                                  "Peter Pan"]
+    assert one(data, "f:transactions_last", "10/1/2026...") == ["Ann Lee", "John Smith", "Johnny Smithson"]
+    assert one(data, "f:transactions_last", "...9/2026") == ["Ann Goldsmith", "John Smith", "Peter Pan"]
+    assert one(data, "f:birthday", "...12/31/1989") == ["Johnny Smithson"]   # never a year-unknown 1600
+    assert one(data, "f:birthday", "1990...") == ["Ann Lee"]
+    assert one(data, "f:birthday", "...3/31") == ["Ann Goldsmith"]            # month/day: January 1 to March 31
+    assert one(data, "f:birthday", "10/1...") == ["Johnny Smithson"]          # October 1 to December 31
+    assert one(data, "f:total_visits", "...5") == ["John Smith", "Johnny Smithson", "Mary O'Brien"]
+    assert one(data, "f:total_visits", "5...") == ["Ann Goldsmith", "John Smith"]
+    assert one(data, "f:last_name", "...h") == ["Ann Goldsmith"]
+    assert one(data, "business", "2000...") == ["John Smith", "Peter Pan"]
 
 
 def test_date_token_reading():
@@ -198,6 +224,12 @@ def test_business_by_id_or_name_and_service(data):
     assert one(data, "business", "tara") == ["John Smith", "Peter Pan"]
     assert len(one(data, "business", "krave")) == 5
     assert one(data, "service", "square") == ["John Smith", "Peter Pan"]
+
+
+def test_phone_problem_comparisons_only_find_records_with_a_problem(data):
+    assert one(data, "issue", "<z") == ["Mary O'Brien"]
+    assert one(data, "issue", "...z") == ["Mary O'Brien"]
+    assert len(one(data, "issue", "=")) == 6
 
 
 def test_tags_files_imports_columns_any_field(data):
@@ -259,14 +291,41 @@ def test_constrain_extend_omit_selected_show_omitted(data):
     assert names(data, node=F.show_omitted(smith)) == ["Ann Goldsmith", "Ann Lee", "Mary O'Brien", "Peter Pan"]
 
 
-def test_limit_to_applies_to_everything(data):
-    rs = data[0]
-    square = next(s["id"] for s in rs.list_services() if s["name"] == "Square")
-    assert names(data, node=F.all_records(), businesses=["2002"]) == ["John Smith", "Peter Pan"]
-    assert names(data, node=F.all_records(), services=[square]) == ["John Smith", "Peter Pan"]
+def test_business_and_services_picked_in_requests(data):
+    """The common finds: a business; a business and one or more of its services; a business without a service."""
+    toast, square = service_id(data, "Toast export"), service_id(data, "Square")
+    krave = ["Ann Goldsmith", "Ann Lee", "John Smith", "Johnny Smithson", "Mary O'Brien"]
+    assert names(data, req(businesses=["1001"])) == krave
+    assert names(data, req(businesses=["1001"], services=[toast])) == krave
+    assert names(data, req(businesses=["1001"], services=[square])) == []
+    assert names(data, req(businesses=["1001", "2002"], services=[toast, square])) == sorted(krave + [
+        "John Smith", "Peter Pan"])
+    assert names(data, req(businesses=["1001", "2002"]), req(services=[square], omit=True)) == krave
+    assert names(data, req(businesses=["2002"]), req(services=[square], omit=True)) == []
+    assert names(data, req(services=[toast], omit=True)) == ["John Smith", "Peter Pan"]   # omit first: from all
+    # Pickers and typed criteria together, and no business at all.
+    assert names(data, req(("f:phone_number", "516*"), businesses=["1001"])) == ["Ann Lee", "John Smith",
+                                                                                 "Johnny Smithson"]
+    assert names(data, req(("f:phone_number", "516 555 0100"))) == ["Ann Lee", "John Smith", "John Smith"]
+
+
+def test_nothing_is_required_and_a_blank_find_is_every_record(data):
+    everyone = names(data, node=F.all_records())
+    assert len(everyone) == 7
+    assert names(data) == everyone                                  # no requests at all
+    assert names(data, req()) == everyone                           # one blank request
+    assert names(data, req(), req()) == everyone
+    assert names(data, req(("f:last_name", "  "))) == everyone      # only spaces typed
+    # A blank request among others is ignored, and so is a blank Omit request.
+    assert names(data, req(("f:last_name", "smith")), req()) == ["John Smith", "John Smith", "Johnny Smithson"]
+    assert names(data, req(("f:last_name", "smith")), req(omit=True)) == ["John Smith", "John Smith",
+                                                                         "Johnny Smithson"]
+    assert names(data, req(), req(("f:city", "brooklyn"), omit=True)) == [
+        "Ann Lee", "John Smith", "Johnny Smithson", "Mary O'Brien", "Peter Pan"]
+    # Constrain with nothing keeps the found set; extend with nothing finds everything (a blank find).
     smith = F.find_node([req(("f:last_name", "smith"))])
-    assert names(data, node=F.show_omitted(smith), businesses=["1001"]) == ["Ann Goldsmith", "Ann Lee",
-                                                                            "Mary O'Brien"]
+    assert names(data, node=F.constrain(smith, [req()])) == names(data, node=smith)
+    assert names(data, node=F.extend(smith, [req()])) == everyone
 
 
 def test_a_tag_as_found_set(data):
@@ -276,9 +335,9 @@ def test_a_tag_as_found_set(data):
 
 
 def test_mistakes_give_messages(data):
-    with pytest.raises(F.FindError, match="at least one"):
-        F.find_node([req(("f:last_name", "  "))])
     for key, text, msg in [("f:last_name", "!", "duplicates"), ("f:total_visits", "abc", "number"),
+                           ("f:transactions_last", "...", "before or after"),
+                           ("f:total_visits", "1...2...3", "once"),
                            ("f:transactions_last", "<10/9", "full date"), ("f:phone_number", "abc", "digits"),
                            ("f:birthday", "1/1...2026", "neither"), ("missing:Old field", "x", "searchable")]:
         with pytest.raises(F.FindError, match=msg):
@@ -289,11 +348,12 @@ def test_mistakes_give_messages(data):
 
 def test_counts_and_csv(data):
     rs, fields, schema = data
-    cond, params = F.where(F.all_records(), fields, businesses=["1001"])
+    cond, params = F.where(F.find_node([req(businesses=["1001"])]), fields)
     assert F.counts(rs.db, cond, params) == {"records": 5, "no_phone": 1, "businesses": 1, "numbers": 4}
     csv = F.found_set_csv(rs.db, schema, cond, params).decode("utf-8-sig")
     lines = csv.splitlines()
-    assert len(lines) == 6 and lines[0].startswith("Record #,Business ID,Business,Service,Import #")
+    assert len(lines) == 6 and lines[0].startswith("Record ID,Record created,Business ID,Business,Service,Import #")
+    assert lines[1].split(",")[1].startswith(datetime.now(ZoneInfo("America/New_York")).strftime("%m/%d/%Y"))
     assert "'=HYPERLINK" not in csv  # Notes is not a field: not in the CSV
     assert "09/12/1600" in csv and "10/09/2026 03:45 PM" in csv
 
