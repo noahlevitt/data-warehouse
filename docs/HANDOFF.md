@@ -3,7 +3,7 @@
 For whoever picks Customer Records up next: a person, or Claude in a new chat. It records what the code and the
 other documents don't: how changes are made and delivered, the decisions the business made, and what is still open.
 
-**State:** version 1.1.0, the first prototype (see [CHANGELOG.md](CHANGELOG.md)), based on file-converter 0.21.2.
+**State:** version 1.2.0, the first prototype (see [CHANGELOG.md](CHANGELOG.md)), based on file-converter 0.21.2.
 About 1,100 tests. Repository: github.com/noahlevitt/data-warehouse, with its own git history: it started from the
 converter's files, not from its history (section 5).
 Owner: Noah Levitt. Last updated 2026-10-14. Update this file with every release (section 4 in particular).
@@ -63,7 +63,7 @@ change them only when a converter fix is ported in (section 5).
 **Delivery** (when the changes can't be pushed directly)
 - Changes go to Noah as a git bundle, `data-warehouse-updateN.bundle`, numbered in order. The repository itself
   came as `data-warehouse-1.0.0.bundle` (complete, no prerequisites); 1.0.1 came as update1, 1.0.2 as update2 and
-  1.1.0 as update3, so the next is `data-warehouse-update4.bundle`. Update this line with each bundle.
+  1.1.0 as update3 and 1.2.0 as update4, so the next is `data-warehouse-update5.bundle`. Update this line with each bundle.
 
   ```bash
   git bundle create ../data-warehouse-updateN.bundle main vX.Y.Z ^vPREVIOUS
@@ -107,6 +107,9 @@ Decided by Noah on 2026-10-14 unless marked otherwise. Don't reverse one without
 | Before tagging (later) | Deduplicate, check that numbers are cell phones, and remove numbers on the Do Not Call list unless within an 18-month established business relationship. Depends on the main system; not built. |
 | Platform | A web app or something launched on the computer, Mac first, Windows too. Built as the converter: a local web app (`./run_local.sh`), Docker for a server. |
 | Finds | Nothing is ever required; a blank Find shows every record. The common finds are a business, a business and one or more services, and a business without a service (an Omit request), so each request has Business and Services pickers; a business isn't required either (e.g. a phone number alone). Dates by day or range, also open-ended: `...1/1/2026` up to that day, `1/1/2025...` from it. Every record has its own ID and a creation date, both searchable. (Noah, 2026-10-14, after trying 1.0.2.) |
+| What finds look like | Searched most: Business, Last visit and Service; then a phone number; sometimes first name or first and last name; sometimes ZIP, city, state, address, total spent, birthday, visits, the record's creation (import) date; rarely the record ID. So a request shows Business, Services and Last visit, then Phone, First and Last name, and every other field is added with a click (Add a field). (Noah, 2026-10-14, after 1.1.0.) |
+| Last visit | A date only, so searches are by days (`1/1/2026...1/20/2026`) and no time is involved. (Noah, 2026-10-14.) Consequence built in 1.2.0: the time in a file is dropped, exports write 12:00 AM. |
+| Names | First name must also find files that put the whole name in First name ("just give a name"); the logic was left to the developer ("figure it out"): a whole name kept in First name (no last name) is also searched as split at a comma, else at its first space; the stored value still matches; see README → Finding records. (Files with a *Name* / *Full Name* column are split by the converter at import, as before.) |
 | Repository | A brand-new project and repository, github.com/noahlevitt/data-warehouse, with its own commit history (not file-converter's). |
 | Port | 8502. The file converter keeps running on 8501 on the same computer, so the two must never share a port (1.0.1). |
 
@@ -131,8 +134,9 @@ Customer Records (the repository is `data-warehouse`), and version 1.0.0.
   plan in section 2, as a prototype ("there will be plenty of changes later").
 - Then Noah tried it and asked for changes, one at a time, each its own version: port 8502 (1.0.1), the mapping
   tables jumping to the top (1.0.2), finds with nothing required, business/service pickers, open-ended ranges and
-  Record ID / created (1.1.0). The Find form's layout (a box per field, later requests folded, More criteria for the
-  rest, Enter = Find) was chosen while building 1.1.0 and is easy to change.
+  Record ID / created (1.1.0); the Find page laid out by what is searched most, Last visit as a date only and names
+  given whole in First name (1.2.0). The Add a field menu (form buttons in a popover, so typing is kept and Enter
+  stays Find) and the name rule were chosen while building 1.2.0 and are easy to change.
 
 ## 4. Open items
 
@@ -166,6 +170,16 @@ Customer Records (the repository is `data-warehouse`), and version 1.0.0.
   Also from it: the How to search panel now has its own text for people (`criteria.SYNTAX`), text ranges take in
   everything starting with their upper end (`a...m` includes Miller), blank Constrain/Extend change nothing.
   It also confirmed 300 random multi-request finds against FileMaker's rules.
+- **Independent test of 1.2.0** (check 6, a separate Claude agent): it found four defects, all fixed before release.
+  The first design made the last visit a `date` field, which changed the converter's behaviour for it: headers with
+  words like Rewards or Points ("Rewards Last Visit") were refused, so another column became the last visit, and
+  the review's future-date, old-date and time-zone checks no longer ran. 1.2.0 keeps it a `datetime` field whose
+  format has no time (`db.date_only`), so the converter sees exactly what it saw before
+  (`test_the_last_visit_is_mapped_and_checked_as_the_converter_does`). First name had stopped finding the name as
+  stored ("Mary Ann" by `mary ann`): it now matches the stored value or the split part, and a comma splits "Smith,
+  John" (`test_records_find_edges.py`). The Add a field menu stayed open from the second add on, covering the new
+  box: it now closes after every add (checked in a browser). Smaller points are documented (KNOWN_ISSUES #2, #22,
+  #27–30).
 - Limits known and accepted: [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
 ## 5. Taking fixes from the file converter
