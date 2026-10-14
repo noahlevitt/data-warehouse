@@ -3,6 +3,8 @@
 Runs real imports (converter.jobs.run_import + records.importer.RecordSink) against a fresh PostgreSQL database.
 """
 
+from datetime import date
+
 import pytest
 
 from converter.heuristics import auto_map
@@ -85,7 +87,7 @@ def test_values_are_typed(rstore, jobs, records_schema):
     assert str(a["total_spent"]) == "1234.5" and a["total_visits"] == 5
     assert a["email"] == "john@x.com"
     assert a["birthday"].isoformat() == "1600-09-12" and b["birthday"].isoformat() == "1985-03-04"
-    assert a["transactions_last"].isoformat() == "2026-10-09T15:45:00"
+    assert a["transactions_last"].isoformat() == "2026-10-09"   # a date only (1.2.0): the file's 3:45 PM is dropped
     assert a["first_visit"].isoformat() == "2024-01-05T00:00:00"
 
 
@@ -217,3 +219,30 @@ def test_big_file_is_stored_quickly(rstore, jobs, records_schema):
     assert rec.status == "completed", rec.error
     assert rstore.get_import(imp)["records"] == 20000
     assert time.time() - t < 60
+
+
+def test_the_last_visit_is_mapped_and_checked_as_the_converter_does(records_schema, real_schema):
+    """The last visit is kept as a day (1.2.0), but the converter still sees a date-and-time field: it picks the
+    same column as for the import format (also when the header has words like Rewards or Points, which a
+    date-only field would refuse) and runs the same checks (future dates, old dates, converted time zones)."""
+    from converter import checks
+    from converter.engine import convert
+    from converter.mapping import profile_columns
+    from converter.reader import read_file
+    from converter.services import initial_mapping
+    loyalty = ("Phone,Last Updated,Rewards Last Visit\n5165550001,10/12/2026 9:00 AM,09/01/2026 7:15 PM\n"
+               "5165550002,10/12/2026 9:05 AM,08/15/2026 6:00 PM\n")
+    future = "Phone,Last Visit\n" + "".join(f"51655509{i:02d},{d}\n" for i, d in enumerate(
+        ["12/11/2026", "11/12/2026", "12/10/2026", "11/11/2026", "12/12/2026"]))
+    for name, text, expect in [("loyalty.csv", loyalty, None), ("future.csv", future, "in the future")]:
+        rr = read_file(name, text.encode())
+        prof = profile_columns(rr.df)
+        mine = initial_mapping(records_schema, rr.df, prof, None, None, use_ai=False).mapping
+        conv = initial_mapping(real_schema, rr.df, prof, None, None, use_ai=False).mapping
+        assert mine.get("transactions_last").sources == conv.get("transactions_last").sources, name
+        if expect:
+            res = convert(rr.df, records_schema, mine, timezone="America/New_York")
+            found = checks.run_checks(records_schema, mine, rr.df, res.audit, prof, "New York",
+                                      today=date(2026, 10, 14))
+            assert any(f.field == "transactions_last" and expect in f.issue for f in found)
+    assert mine.get("transactions_last").sources == ["Last Visit"]
