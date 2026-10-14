@@ -84,11 +84,27 @@ def test_a_business_id_wins_over_names_starting_with_it(data):
 
 
 def test_times_typed_in_a_date_criterion_count(data):
-    assert names(data, "f:transactions_last", ">10/9/2026 9:00 AM") == ["José"]
-    assert names(data, "f:transactions_last", "<10/9/2026 3:00 PM") == ["Sean", "Zoë"]
-    assert names(data, "f:transactions_last", "10/9/2026 9:00 AM...10/9/2026 10:00 AM") == ["Zoë"]
-    assert names(data, "f:transactions_last", "10/9/2026 3:45 PM") == ["José"]
-    assert names(data, "f:transactions_last", "10/9/2026") == ["José", "Zoë"]
+    """In a date-and-time field (here Record created, on the app's clock) a typed time means that minute."""
+    rs = data[0]
+    rs.db.execute("UPDATE records SET created_at = '2026-10-01 12:00-04'")
+    for who, at in [("Zoë", "2026-10-09 09:00"), ("José", "2026-10-09 15:45"), ("Sean", "2026-10-08 12:00")]:
+        rs.db.execute("UPDATE records SET created_at = (%s::timestamp AT TIME ZONE 'America/New_York') "
+                      "WHERE first_name = %s", (at, who))
+    assert names(data, "created", ">10/9/2026 9:00 AM") == ["José"]
+    assert names(data, "created", "<10/9/2026 3:00 PM") == ["Ali", "Pat", "Sean", "Zoë"]
+    assert names(data, "created", "10/9/2026 9:00 AM...10/9/2026 10:00 AM") == ["Zoë"]
+    assert names(data, "created", "10/9/2026 3:45 PM") == ["José"]
+    assert names(data, "created", "10/9/2026") == ["José", "Zoë"]
+
+
+def test_the_last_visit_is_a_date_only(data):
+    """Last visit / order keeps the day only (1.2.0): a time in the file is dropped, a typed time is ignored."""
+    rs = data[0]
+    assert {r["transactions_last"].isoformat() for r in rs.db.fetch(
+        "SELECT transactions_last FROM records WHERE first_name IN ('Zoë', 'José')")} == {"2026-10-09"}
+    assert names(data, "f:transactions_last", "10/9/2026 3:45 PM") == ["José", "Zoë"]
+    assert names(data, "f:transactions_last", ">10/9/2026 9:00 AM") == []        # after that day
+    assert names(data, "f:transactions_last", "10/8/2026...10/9/2026") == ["José", "Sean", "Zoë"]
 
 
 def test_today_is_the_app_time_zones():
@@ -184,3 +200,31 @@ def test_values_out_of_range_give_a_message_not_an_error_page(data):
                            ("f:phone_number", "516...", "range"), ("f:phone_number", "+1", "digits after")]:
         with pytest.raises(F.FindError, match=msg):
             names(data, key, text)
+
+
+# ---------------------------------------------------------------- 1.2.0
+
+def test_a_whole_name_in_first_name_is_found_by_first_and_last_name(data, records_schema, tmp_path):
+    """A file's First Name column can hold whole names, kept whole with no Last name. First name finds the stored
+    value as shown and also the first part of the name; Last name also finds the rest. "Smith, John" is split at
+    the comma. Records with a last name are searched as they are; = and * are about the stored values."""
+    rs = data[0]
+    import_file(rs, Store(tmp_path / "n.db"), records_schema, "names.csv",
+                'First Name,Phone\nLisa Marie Ray,9175550111\nCher,9175550112\n"Smith, John",9175550113\n',
+                business="1001")
+    stored = {r["first_name"]: r["last_name"] for r in rs.db.fetch("SELECT first_name, last_name FROM records")}
+    assert stored["Lisa Marie Ray"] is None and stored["Cher"] is None and stored["Smith, John"] is None
+    d = (rs, find_fields(records_schema, rs.columns_seen()), records_schema)
+    lisa = ["Lisa Marie Ray"]
+    for typed in ("lisa", "lisa marie", "==Lisa Marie Ray", '"marie ray"'):   # what the First name column shows
+        assert names(d, "f:first_name", typed) == lisa, typed
+    assert names(d, "f:last_name", "ray") == lisa and names(d, "f:last_name", "marie ray") == lisa
+    assert names(d, "f:last_name", "lisa") == []                      # Lisa is her first name
+    assert names(d, "f:last_name", "smith") == ["Smith, John"] and names(d, "f:first_name", "john") == [
+        "Smith, John"]
+    assert names(d, "f:first_name", "cher") == ["Cher"] and "Cher" not in names(d, "f:last_name", "*")
+    assert "Lisa Marie Ray" in names(d, "f:last_name", "=")             # no last name is stored
+    assert names(d, "name", "lisa ray") == lisa
+    assert names(d, "f:last_name", "o'brien") == ["Sean"] and names(d, "f:first_name", "sean") == ["Sean"]
+    omit = F.where(F.find_node([{"omit": True, "criteria": [["f:last_name", "ray"]]}]), d[1])
+    assert "Lisa Marie Ray" not in [r["first_name"] for r in F.page(rs.db, records_schema, *omit, limit=100)]
