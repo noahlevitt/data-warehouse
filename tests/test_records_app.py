@@ -240,6 +240,20 @@ def test_the_most_used_fields_are_shown_and_the_others_added(env):
     assert [t for t in at.text_input if t.label == "Column: Last Visit"]
 
 
+def test_a_sole_star_or_equals_in_a_box(env):
+    """A sole * finds the records where the field has a value, a sole = those where it is blank (both records here
+    have a phone and a last visit, and no city)."""
+    for label, text, count in [("Phone", "*", "2"), ("Phone", "=", "0"), ("Last visit / order", "=", "0"),
+                               ("Last visit / order", " * ", "2"), ("City", "=", "2"), ("City", "*", "0")]:
+        at = run_page("Find")
+        if label == "City":
+            at.button(key="fq_1_1_add_f:city").click().run()
+        by_label(at.text_input, label).input(text)
+        button(at, "Find").click().run()
+        assert not at.error, (label, text, [e.value for e in at.error])
+        assert [m.value for m in at.metric][0] == count, (label, text)
+
+
 def test_omit_selected_and_show_omitted(env):
     """The found-set steps work from the page (state set as the page would)."""
     at = run_page("Find", state={"found": F.all_records(), "found_note": "All records"})
