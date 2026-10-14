@@ -146,6 +146,15 @@ class FieldSpec(BaseModel):
         description="date/datetime only: receives a generically named date column (Date, Start Time, Timestamp) - "
         "'call_log' in files that look like call logs, 'default' in other files.",
     )
+    # date/datetime fields: the date a customer was created / signed up / first visited (Customer Records'
+    # first_visit). It is found by its own synonyms and never counts as the file's last-activity date, so
+    # heuristics.auto_map step 7 still routes a generic "Date" column to the last-activity field (added for Customer
+    # Records 1.0.0; the converter's import format has no such field).
+    creation_date: bool = Field(
+        False,
+        description="date/datetime only: holds the customer's creation / sign-up / first-visit date; never counts "
+        "as a last-activity date when generic date columns are routed.",
+    )
     # date fields: year written for a month + day without a year (e.g. birthday "9/12" -> 09/12/1600).
     no_year_value: int | None = Field(
         None,
@@ -160,7 +169,8 @@ class FieldSpec(BaseModel):
         * A ``fixed_blank`` field can't be required or have a default - both would put a value in it.
         * A ``manual_only`` field can't be required, have a default or be fixed_blank: a default would fill it
           without a person choosing a column, and a required one would block every file nobody mapped by hand.
-        * ``no_year_value`` only makes sense for ``date`` fields, ``generic_date`` for date/datetime fields.
+        * ``no_year_value`` only makes sense for ``date`` fields, ``generic_date`` for date/datetime fields, and
+          ``creation_date`` for date/datetime fields that aren't ``generic_date`` ones.
         * ``on_invalid`` defaults to "reject" for required fields and "blank" for optional ones: a bad value in
           a required field makes the row unusable, a bad optional value is just dropped.
         * An ``enum`` field needs ``allowed_values``.
@@ -177,6 +187,9 @@ class FieldSpec(BaseModel):
             raise ValueError(f"no_year_value only applies to date fields ('{self.name}' is {self.type})")
         if self.generic_date and self.type not in ("date", "datetime"):
             raise ValueError(f"generic_date only applies to date/datetime fields ('{self.name}' is {self.type})")
+        if self.creation_date and (self.type not in ("date", "datetime") or self.generic_date):
+            raise ValueError(f"creation_date only applies to date/datetime fields without generic_date "
+                             f"('{self.name}')")
         if self.on_invalid is None:
             self.on_invalid = "reject" if self.required else "blank"
         if self.type == "enum" and not self.allowed_values:
