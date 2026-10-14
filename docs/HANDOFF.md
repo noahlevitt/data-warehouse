@@ -3,7 +3,7 @@
 For whoever picks Customer Records up next: a person, or Claude in a new chat. It records what the code and the
 other documents don't: how changes are made and delivered, the decisions the business made, and what is still open.
 
-**State:** version 1.2.0, the first prototype (see [CHANGELOG.md](CHANGELOG.md)), based on file-converter 0.21.2.
+**State:** version 1.2.1, the first prototype (see [CHANGELOG.md](CHANGELOG.md)), based on file-converter 0.21.2.
 About 1,100 tests. Repository: github.com/noahlevitt/data-warehouse, with its own git history: it started from the
 converter's files, not from its history (section 5).
 Owner: Noah Levitt. Last updated 2026-10-14. Update this file with every release (section 4 in particular).
@@ -62,8 +62,9 @@ change them only when a converter fix is ported in (section 5).
 
 **Delivery** (when the changes can't be pushed directly)
 - Changes go to Noah as a git bundle, `data-warehouse-updateN.bundle`, numbered in order. The repository itself
-  came as `data-warehouse-1.0.0.bundle` (complete, no prerequisites); 1.0.1 came as update1, 1.0.2 as update2 and
-  1.1.0 as update3 and 1.2.0 as update4, so the next is `data-warehouse-update5.bundle`. Update this line with each bundle.
+  came as `data-warehouse-1.0.0.bundle` (complete, no prerequisites); 1.0.1 came as update1, 1.0.2 as update2,
+  1.1.0 as update3, 1.2.0 as update4 and 1.2.1 as update5, so the next is `data-warehouse-update6.bundle`. Update
+  this line with each bundle.
 
   ```bash
   git bundle create ../data-warehouse-updateN.bundle main vX.Y.Z ^vPREVIOUS
