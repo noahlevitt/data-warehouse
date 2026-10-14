@@ -7,9 +7,10 @@ the functions here for the new pages, passing a :class:`Ctx` with everything the
 signed-in user, how to open another page). Like ``app.py`` itself, every function redraws its page from scratch on
 each click (Streamlit reruns the script); what must survive a rerun is kept in ``st.session_state``:
 
-* Find: ``find_reqs`` (the requests on screen: ids and their starting criteria), ``find_ver`` (bumped to clear the
-  request editors), ``found`` (the found set, a records.find node), ``found_note`` (how it was made),
-  ``found_csv`` (a prepared CSV, with the found set, Limit to and sort it was made for).
+* Find: ``find_reqs`` (the requests on screen: ids, Find or Omit, the empty More criteria table each starts
+  with; what is typed lives in the widgets, keyed ``fq_<find_ver>_<request id>_…``), ``find_ver`` (bumped by Clear
+  to empty every box), ``found`` (the found set, a records.find node), ``found_note`` (how it was made),
+  ``found_csv`` (a prepared CSV, with the found set and sort it was made for).
 * Tags: ``tag_export_<id>`` (a prepared export, with the tag's last change time so a changed tag is prepared again).
 
 The SQL lives in records.store / find / tags; this module only draws pages and calls them.
@@ -26,14 +27,15 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
+import psycopg
 from psycopg import sql
 
 from converter.schema import TargetSchema
 
 from . import find as F
-from .criteria import __doc__ as CRITERIA_HELP
+from .criteria import SYNTAX
 from .db import Database
-from .fields import FindField, find_fields
+from .fields import FORM_KEYS, PICKER_KEYS, FindField, find_fields
 from .store import RecordStore, StoreError
 from .tags import export_file, export_filename, export_table
 
@@ -86,16 +88,23 @@ def go_find(ctx: Ctx, node: dict, note: str) -> None:
 
 # ---------------------------------------------------------------------------------------------------- Find
 
-# Fields a new request starts with (like a FileMaker find layout); any row can be changed to another field, and
-# rows without a criterion are ignored.
-STARTING_FIELDS = ["Phone", "First name", "Last name", "Any field"]
+# Example shown in an empty box, by kind of field (records.criteria has the whole syntax).
+PLACEHOLDER = {"date": "e.g. 1/1/2025...1/1/2026", "created": "e.g. 10/14/2026 or 10/1/2026...",
+               "number": "e.g. >5 or 10...20", "phone": "e.g. 516 555 0100 or 516*", "bool": "yes / no"}
+TIP = {"text": "A word it starts with (smith), =smith for the whole word, \"main st\" anywhere, = empty, * any.",
+       "date": "10/9/2026 · 10/2026 · 2026 · 1/1/2025...1/1/2026 · ...1/1/2026 up to that day · 1/1/2025... from "
+               "that day on · <, <=, >, >= · = empty · * any",
+       "number": "5 · >5 · <=100 · 10...20 · ...20 up to 20 · 10... 10 or more · = empty · * any",
+       "phone": "Any formatting; part of a number (5550100) or its start (516*); = no usable number; * has one.",
+       "bool": "yes or no; = empty; * any value"}
+TIP["created"] = TIP["date"]
 
 
 def _new_request(omit: bool = False) -> dict:
-    """A new request on screen: an id (for widget keys), Find or Omit, and its starting rows."""
+    """A new request on screen: an id (for widget keys), Find or Omit, and its empty More criteria table."""
     ss.find_seq = ss.get("find_seq", 0) + 1
     return {"id": ss.find_seq, "omit": omit,
-            "base": pd.DataFrame({COL_FIELD: STARTING_FIELDS, COL_CRIT: [""] * len(STARTING_FIELDS)})}
+            "base": pd.DataFrame({COL_FIELD: pd.Series(dtype="object"), COL_CRIT: pd.Series(dtype="object")})}
 
 
 def _reset_requests() -> None:
@@ -104,7 +113,11 @@ def _reset_requests() -> None:
 
 
 def page_find(ctx: Ctx) -> None:
-    """Page "Find": find requests (FileMaker style), the found set, its records, and adding it to a tag."""
+    """Page "Find": find requests (FileMaker style), the found set, its records, and adding it to a tag.
+
+    The requests are one form: typing doesn't rerun the page, and Enter in any box is the Find button (the form's
+    first button). Nothing is required; a Find with everything blank shows every record.
+    """
     st.header("Find records")
     totals = ctx.records.totals()
     if not totals["records"]:
@@ -112,130 +125,176 @@ def page_find(ctx: Ctx) -> None:
     businesses = ctx.records.list_businesses()
     services = ctx.records.list_services()
     fields = find_fields(ctx.schema, ctx.records.columns_seen())
-    by_label = {f.label: f for f in fields}
-
-    # Limit to: applies to everything below, always.
-    c1, c2 = st.columns(2)
-    biz_pick = c1.multiselect("Limit to businesses", [b["id"] for b in businesses], key="find_biz",
-                              format_func=lambda i: next((_biz_label(b) for b in businesses if b["id"] == i), i),
-                              placeholder="All businesses")
-    svc_pick = c2.multiselect("Limit to services", [s["id"] for s in services], key="find_svc",
-                              format_func=lambda i: next((s["name"] for s in services if s["id"] == i), str(i)),
-                              placeholder="All services")
-
+    by_key = {f.key: f for f in fields}
+    boxes = [by_key[k] for k in FORM_KEYS] + [f for f in fields if f.key.startswith("f:")]
+    extra = {f.label: f for f in fields
+             if f.key not in PICKER_KEYS and f.key not in FORM_KEYS and not f.key.startswith("f:")}
     if "find_reqs" not in ss:
         _reset_requests()
-    current: dict[int, pd.DataFrame] = {}
-    with st.container(border=True):
-        st.markdown("**Find requests** — a record must match every criterion of a request; several requests add "
-                    "up (OR); an **Omit** request removes what it matches from the requests above it.")
+
+    requests: list[dict] = []
+    problems: list[str] = []
+    with st.form("find_form"):
+        st.markdown("**Find requests** — fill in only what you're looking for; **nothing is required**, and a Find "
+                    "with everything blank shows every record. A record must match everything filled in within a "
+                    "request; several requests add up (OR); an **Omit** request removes what it matches from the "
+                    "requests above it. Enter in any box = **Find**.")
+        b = st.columns(5)
+        do_find = b[0].form_submit_button("Find", type="primary", width="stretch",
+                                          help="A new found set from these requests (blank = every record)")
+        do_constrain = b[1].form_submit_button("Constrain", width="stretch", disabled="found" not in ss,
+                                               help="Keep only found records that also match these requests")
+        do_extend = b[2].form_submit_button("Extend", width="stretch", disabled="found" not in ss,
+                                            help="Add the records these requests match to the found set")
+        do_all = b[3].form_submit_button("Show all", width="stretch", help="Every record")
+        do_clear = b[4].form_submit_button("Clear", width="stretch",
+                                           help="Empty the requests (the found set stays)")
+        remove = None
         for n, req in enumerate(list(ss.find_reqs)):
-            h1, h2, h3 = st.columns([1.2, 2.2, 0.8], vertical_alignment="bottom")
-            h1.markdown(f"**Request {n + 1}**")
-            kind = h2.segmented_control("Request type", ["Find", "Omit"], default="Omit" if req["omit"] else "Find",
-                                        key=f"freq_kind_{ss.find_ver}_{req['id']}", label_visibility="collapsed")
-            req["omit"] = kind == "Omit"
-            if len(ss.find_reqs) > 1 and h3.button("Remove", key=f"freq_rm_{ss.find_ver}_{req['id']}",
-                                                   width="stretch"):
-                ss.find_reqs = [r for r in ss.find_reqs if r["id"] != req["id"]]
-                st.rerun()
-            current[req["id"]] = st.data_editor(
-                req["base"], key=f"freq_{ss.find_ver}_{req['id']}", num_rows="dynamic", hide_index=True,
-                width="stretch",
-                column_config={
-                    COL_FIELD: st.column_config.SelectboxColumn(options=list(by_label), width="medium",
-                                                                help="What to search"),
-                    COL_CRIT: st.column_config.TextColumn(width="large", help="What to look for (see How to "
-                                                                              "search below)"),
-                })
-        b = st.columns(7)
-        if b[6].button("Clear", width="stretch", help="Start the requests over (the found set stays)"):
-            _reset_requests()
-            st.rerun()
-        add_find = b[0].button("+ Request", width="stretch", help="Add a request (OR)")
-        add_omit = b[1].button("+ Omit request", width="stretch", help="Add a request that removes records")
-        do_find = b[2].button("Find", type="primary", width="stretch", help="A new found set from these requests")
-        do_constrain = b[3].button("Constrain", width="stretch", disabled="found" not in ss,
-                                   help="Keep only found records that also match these requests")
-        do_extend = b[4].button("Extend", width="stretch", disabled="found" not in ss,
-                                help="Add the records these requests match to the found set")
-        do_all = b[5].button("Show all", width="stretch", help="Every record (within Limit to)")
+            rkey = f"fq_{ss.find_ver}_{req['id']}"
+            with st.container(border=True):
+                h1, h2, h3 = st.columns([1.2, 2.2, 0.8], vertical_alignment="bottom")
+                h1.markdown(f"**Request {n + 1}**")
+                # A radio, not a toggle: one of the two is always chosen (a toggle clicked twice chose neither).
+                kind = h2.radio("Request type", ["Find", "Omit"], index=1 if req["omit"] else 0, key=f"{rkey}_kind",
+                                horizontal=True, label_visibility="collapsed")
+                req["omit"] = kind == "Omit"
+                if len(ss.find_reqs) > 1 and h3.form_submit_button("Remove", key=f"{rkey}_rm", width="stretch"):
+                    remove = req["id"]
+                c1, c2 = st.columns(2)
+                biz = c1.multiselect(
+                    "Business", [x["id"] for x in businesses], key=f"{rkey}_biz",
+                    format_func=lambda i: next((_biz_label(x) for x in businesses if x["id"] == i), i),
+                    placeholder="Any business" if businesses else "No businesses yet", select_all=False,
+                    help="One or more businesses: type the ID or name and press Enter for the first match, or click "
+                         "them. Empty = any business.")
+                svc = c2.multiselect(
+                    "Services", [x["id"] for x in services], key=f"{rkey}_svc",
+                    format_func=lambda i: next((x["name"] + ("" if x["active"] else " (inactive)")
+                                                for x in services if x["id"] == i), str(i)),
+                    placeholder="Any service" if services else "No services yet", select_all=False,
+                    help="One or more services. Empty = any service. To leave a service out, pick it in an Omit "
+                         "request.")
+                criteria: list[list[str]] = []
+                # Request 1 shows every box; later requests (often just a business or a service to omit) keep
+                # theirs folded unless something is typed in them, so the found set isn't pushed far down.
+                filled = sum(1 for f in boxes if str(ss.get(f"{rkey}_{f.key}") or "").strip())
+                with st.expander("Fields" + (f" — {filled} filled in" if filled else ""),
+                                 expanded=n == 0 or filled > 0):
+                    cols = st.columns(4)
+                    for i, f in enumerate(boxes):
+                        text = cols[i % 4].text_input(
+                            f.label, key=f"{rkey}_{f.key}", placeholder=PLACEHOLDER.get(f.kind, ""),
+                            help=TIP.get(f.kind, TIP["text"]) + (f" — {f.help}" if f.help else ""))
+                        if text.strip():
+                            criteria.append([f.key, text])
+                with st.expander("More criteria: Any field, Full name, Tag, Import #, File name, file columns…"):
+                    more = st.data_editor(
+                        req["base"], key=f"{rkey}_more", num_rows="dynamic", hide_index=True, width="stretch",
+                        column_config={
+                            COL_FIELD: st.column_config.SelectboxColumn(options=list(extra), width="medium",
+                                                                        help="What to search"),
+                            COL_CRIT: st.column_config.TextColumn(width="large", help="What to look for (see How "
+                                                                                      "to search below)"),
+                        })
+                for _, row in more.iterrows():
+                    label, text = row.get(COL_FIELD), row.get(COL_CRIT)
+                    if not (isinstance(text, str) and text.strip()):
+                        continue
+                    if not (isinstance(label, str) and label):   # an empty cell is NaN or None, not ""
+                        problems.append(f"Request {n + 1}, More criteria: choose a Field for '{text.strip()}'.")
+                    else:
+                        f = extra.get(label)
+                        criteria.append([f.key if f else f"missing:{label}", text])
+                requests.append({"omit": req["omit"], "businesses": list(biz), "services": list(svc),
+                                 "criteria": criteria})
+        a = st.columns(5)
+        add_find = a[0].form_submit_button("+ Request", width="stretch", help="Add a request (OR)")
+        add_omit = a[1].form_submit_button("+ Omit request", width="stretch",
+                                           help="Add a request that removes what it matches")
         with st.expander("How to search"):
             st.markdown(_help_text())
 
+    if do_clear:
+        _reset_requests()
+        st.rerun()
+    if remove is not None:
+        ss.find_reqs = [r for r in ss.find_reqs if r["id"] != remove]
+        st.rerun()
     if add_find or add_omit:
-        _keep_edits(current)
         ss.find_reqs.append(_new_request(omit=add_omit))
         st.rerun()
 
-    requests = _requests(current, by_label)
-    try:
-        if do_find:
-            ss.found, ss.found_note = F.find_node(requests), "Find"
-        elif do_constrain:
-            ss.found, ss.found_note = F.constrain(ss.found, requests), ss.get("found_note", "") + " → constrained"
-        elif do_extend:
-            ss.found, ss.found_note = F.extend(ss.found, requests), ss.get("found_note", "") + " → extended"
-        elif do_all:
-            ss.found, ss.found_note = F.all_records(), "All records"
-        if do_find or do_constrain or do_extend or do_all:
+    step = None
+    if (do_constrain or do_extend) and F.blank(requests):
+        st.warning(f"Fill in something to {'constrain' if do_constrain else 'extend'} the found set with; it is "
+                   "unchanged. (A blank **Find** shows every record.)")
+    elif problems and (do_find or do_constrain or do_extend):
+        for msg in problems:
+            st.error(msg)
+    elif do_find:
+        step = F.find_node(requests), _describe(requests, by_key, services)
+    elif do_constrain:
+        step = F.constrain(ss.found, requests), ss.get("found_note", "") + " → constrained: " + _describe(
+            requests, by_key, services)
+    elif do_extend:
+        step = F.extend(ss.found, requests), ss.get("found_note", "") + " → extended: " + _describe(
+            requests, by_key, services)
+    elif do_all:
+        step = F.all_records(), "All records"
+    if step is not None:
+        # Checked before it replaces the found set: a criterion that can't be read leaves the found set as it was
+        # (as FileMaker does), so correcting the typo and trying again works.
+        try:
+            F.where(step[0], fields, timezone=ctx.tz, collation=ctx.db.collation)
+            ss.found, ss.found_note = step
             ss.pop("found_csv", None)
-    except F.FindError as exc:
-        st.error(str(exc))
+        except F.FindError as exc:
+            st.error(str(exc) + (" The found set below is unchanged." if "found" in ss else ""))
 
     if "found" not in ss:
-        st.caption("Type criteria and click **Find**, or **Show all**.")
+        st.caption("Fill in what you're looking for and click **Find** (or press Enter). A blank Find shows every "
+                   "record.")
         return
-    _found_set(ctx, fields, biz_pick, svc_pick, businesses)
+    _found_set(ctx, fields, businesses)
 
 
-def _keep_edits(current: dict[int, pd.DataFrame]) -> None:
-    """Make what was typed the requests' starting values (before their editors are rebuilt)."""
-    for req in ss.find_reqs:
-        if req["id"] in current:
-            req["base"] = current[req["id"]].reset_index(drop=True)
-    ss.find_ver += 1
-
-
-def _requests(current: dict[int, pd.DataFrame], by_label: dict[str, FindField]) -> list[dict]:
-    """The requests on screen as records.find requests: {"omit", "criteria": [[field key, text], …]}."""
-    out = []
-    for req in ss.find_reqs:
-        df = current.get(req["id"], req["base"])
-        crit = []
-        for _, row in df.iterrows():
-            label, text = row.get(COL_FIELD), row.get(COL_CRIT)
-            if label and isinstance(text, str) and text.strip():
-                f = by_label.get(label)
-                crit.append([f.key if f else f"missing:{label}", text])
-        out.append({"omit": req["omit"], "criteria": crit})
-    return out
+def _describe(requests: list[dict], by_key: dict[str, FindField], services: list[dict]) -> str:
+    """A short description of a find for the found set's caption ("business 1001; omit Catering")."""
+    names = {s["id"]: s["name"] for s in services}
+    parts = []
+    for r in requests:
+        bits = []
+        if r["businesses"]:
+            bits.append("business " + ", ".join(r["businesses"]))
+        if r["services"]:
+            bits.append(", ".join(names.get(s, str(s)) for s in r["services"]))
+        bits += [f"{by_key[k].label if k in by_key else k} {t.strip()}" for k, t in r["criteria"]]
+        if bits:
+            parts.append(("omit " if r["omit"] else "") + " · ".join(bits))
+    return "; ".join(parts) if parts else "Blank find (every record)"
 
 
 def _help_text() -> str:
-    """The search syntax, from records.criteria's documentation, for the How to search panel."""
-    doc = CRITERIA_HELP.split("Overview\n--------\n", 1)[-1]
-    lines = []
-    for line in doc.splitlines():
-        if line and not line.startswith(" "):
-            lines.append(f"\n**{line.strip()}**\n")
-        elif line.strip():
-            lines.append("- " + line.strip())
-    return "\n".join(lines)
+    """The search syntax for the How to search panel (records.criteria.SYNTAX)."""
+    return SYNTAX
 
 
-def _found_set(ctx: Ctx, fields: list[FindField], biz_pick: list[str], svc_pick: list[int],
-               businesses: list[dict]) -> None:
+def _found_set(ctx: Ctx, fields: list[FindField], businesses: list[dict]) -> None:
     """The found set: counts, the records table, one record's details, tag actions and CSV."""
     try:
-        cond, params = F.where(ss.found, fields, biz_pick, svc_pick, timezone=ctx.tz, collation=ctx.db.collation)
+        cond, params = F.where(ss.found, fields, timezone=ctx.tz, collation=ctx.db.collation)
         cnt = F.counts(ctx.db, cond, params)
     except F.FindError as exc:
         st.error(str(exc))
         return
+    except psycopg.Error as exc:  # a value the database refused: say so instead of the error page
+        st.error(f"The database couldn't run this find ({type(exc).__name__}): {str(exc).splitlines()[0]}. "
+                 "Change the criteria and click **Find**, or **Show all**.")
+        return
     st.subheader("Found set")
     if ss.get("found_note"):
-        st.caption(ss.found_note + (" · limited to the chosen businesses/services" if biz_pick or svc_pick else ""))
+        st.caption(ss.found_note)
     m = st.columns(4)
     m[0].metric("Records", f"{cnt['records']:,}")
     m[1].metric("Unique phone numbers", f"{cnt['numbers']:,}")
@@ -243,7 +302,7 @@ def _found_set(ctx: Ctx, fields: list[FindField], biz_pick: list[str], svc_pick:
     m[3].metric("Businesses", f"{cnt['businesses']:,}")
     if not cnt["records"]:
         st.info("No records match.")
-        if st.button("Show omitted only", help="Every record (within Limit to) that isn't in the found set"):
+        if st.button("Show omitted only", help="Every record that isn't in the found set"):
             ss.found, ss.found_note = F.show_omitted(ss.found), ss.get("found_note", "") + " → omitted only"
             st.rerun()
         return
@@ -255,18 +314,18 @@ def _found_set(ctx: Ctx, fields: list[FindField], biz_pick: list[str], svc_pick:
     sort = o2.selectbox("Sort by", F.available_sorts(ctx.schema), key="found_sort")
     per_page = o3.selectbox("Per page", [50, 100, 250, 500], index=1, key="found_pp")
     pages = max(1, -(-cnt["records"] // per_page))
-    sig = hashlib.sha1(json.dumps([ss.found, biz_pick, svc_pick, sort], default=str).encode()).hexdigest()[:10]
+    sig = hashlib.sha1(json.dumps([ss.found, sort], default=str).encode()).hexdigest()[:10]
     pg = o4.number_input(f"Page (of {pages:,})", 1, pages, 1, key=f"found_pg_{sig}_{per_page}")
     rows = F.page(ctx.db, ctx.schema, cond, params, sort, per_page, (pg - 1) * per_page)
-    table = F.page_frame(rows, ctx.schema, show)
+    table = F.page_frame(rows, ctx.schema, show, ctx.tz)
     st.caption("Select rows to see a record or to omit them from the found set.")
     event = st.dataframe(table, hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row",
                          key=f"found_tbl_{sig}_{per_page}_{pg}",
-                         column_config={"Record #": st.column_config.NumberColumn(format="%d", width="small"),
+                         column_config={F.ID_COL: st.column_config.NumberColumn(format="%d", width="small"),
                                         "Import #": st.column_config.NumberColumn(format="%d", width="small"),
                                         "Row": st.column_config.NumberColumn(format="%d", width="small")})
     sel = list(event.selection.rows) if event and event.selection else []
-    ids = [int(table.iloc[i]["Record #"]) for i in sel]
+    ids = [int(table.iloc[i][F.ID_COL]) for i in sel]
 
     a1, a2, a3 = st.columns(3)
     if a1.button(f"Omit selected ({len(ids)})", disabled=not ids, width="stretch"):
@@ -274,18 +333,18 @@ def _found_set(ctx: Ctx, fields: list[FindField], biz_pick: list[str], svc_pick:
         ss.found_note = ss.get("found_note", "") + f" → {len(ids)} omitted"
         ss.pop("found_csv", None)
         st.rerun()
-    if a2.button("Show omitted only", width="stretch", help="Every record (within Limit to) not in the found set"):
+    if a2.button("Show omitted only", width="stretch", help="Every record that isn't in the found set"):
         ss.found, ss.found_note = F.show_omitted(ss.found), ss.get("found_note", "") + " → omitted only"
         ss.pop("found_csv", None)
         st.rerun()
-    # The prepared CSV belongs to exactly this found set, Limit to and sort (sig); any change asks for a new one.
+    # The prepared CSV belongs to exactly this found set and sort (sig); any change asks for a new one.
     csv_ready = ss.get("found_csv") and ss.found_csv["sig"] == sig
     if csv_ready:
         a3.download_button("⬇ Found set (CSV)", ss.found_csv["data"], f"found_set_{datetime.now():%Y%m%d-%H%M}.csv",
                            mime="text/csv", width="stretch", on_click="ignore")
     elif a3.button("Prepare CSV of the found set", width="stretch"):
         with st.spinner("Writing the CSV…"):
-            ss.found_csv = {"sig": sig, "data": F.found_set_csv(ctx.db, ctx.schema, cond, params, sort)}
+            ss.found_csv = {"sig": sig, "data": F.found_set_csv(ctx.db, ctx.schema, cond, params, sort, ctx.tz)}
         st.rerun()
 
     if len(ids) == 1:
@@ -299,7 +358,8 @@ def _record_detail(ctx: Ctx, record_id: int) -> None:
     if rec is None:
         return
     with st.container(border=True):
-        st.markdown(f"**Record #{rec['id']}** · {rec['business_id']} · {rec['business_name']} · {rec['service_name']}"
+        st.markdown(f"**Record ID {rec['id']}** · created {_when(rec['created_at'], ctx.tz)} · {rec['business_id']} · "
+                    f"{rec['business_name']} · {rec['service_name']}"
                     f" · import #{rec['job_id'] or '—'} ({rec['file_name']}"
                     + (f", sheet {rec['sheet']}" if rec.get("sheet") else "") + f"), row {rec['file_row']}")
         c1, c2 = st.columns(2)
@@ -370,7 +430,8 @@ def _tag_actions(ctx: Ctx, cond, params: dict, cnt: dict, businesses: list[dict]
                 except StoreError as exc:
                     st.error(str(exc))
         if len(biz_in_found) > 1:
-            st.caption(f"The found set has records of {cnt['businesses']} businesses; use **Limit to** to keep one.")
+            st.caption(f"The found set has records of {cnt['businesses']} businesses; **Constrain** with one "
+                       "**Business** to keep only its records.")
 
 
 # ---------------------------------------------------------------------------------------------------- Tags
@@ -507,11 +568,11 @@ def _tag_records(ctx: Ctx, t: dict) -> None:
         st.caption("No records in this tag yet. Add them from **Find**.")
         return
     names = [n for n in DEFAULT_SHOW if n in ctx.schema.field_names]
-    table = F.page_frame(rows, ctx.schema, names)
+    table = F.page_frame(rows, ctx.schema, names, ctx.tz)
     ev = st.dataframe(table, hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row",
                       key=f"tagrec_tbl_{t['id']}_{pg}_{t['records']}",
-                      column_config={"Record #": st.column_config.NumberColumn(format="%d", width="small")})
-    sel = [int(table.iloc[i]["Record #"]) for i in (ev.selection.rows if ev and ev.selection else [])]
+                      column_config={F.ID_COL: st.column_config.NumberColumn(format="%d", width="small")})
+    sel = [int(table.iloc[i][F.ID_COL]) for i in (ev.selection.rows if ev and ev.selection else [])]
     if st.button(f"Remove selected from tag ({len(sel)})", disabled=not sel):
         n = ctx.records.remove_from_tag(t["id"], sql.SQL("r.id = ANY(%(sel)s)"), {"sel": sel}, ctx.user["username"],
                                         "selected on the tag")
