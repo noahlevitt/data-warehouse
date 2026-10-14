@@ -929,10 +929,13 @@ def page_new_import() -> None:
     ])
     # The return value of st.data_editor isn't used: edits are handled in the on_map_edit callback (which gets the
     # key so it can read the edits) and the grid is always rebuilt from ss.mapping. Only How, Source column(s) and
-    # Option can be edited.
+    # Option can be edited. height="content" shows every row, so the page scrolls instead of the grid: each edit
+    # gives the grid a new key (see "Widget-key versioning"), and a grid scrolled inside itself would jump back
+    # to its first row on every click (1.0.2).
     key = f"map_editor_{ss.editor_version}"
     st.data_editor(
         grid, key=key, on_change=on_map_edit, args=(key,), hide_index=True, num_rows="fixed", width="stretch",
+        height="content",
         disabled=[COL_FIELD, COL_TYPE, COL_PREVIEW, COL_CHECK, COL_BY, COL_WHY],
         column_config={
             COL_FIELD: st.column_config.TextColumn(help="Target field. * = required. 🔒 = always blank (locked). "
@@ -1211,8 +1214,11 @@ def _notes_and_checks(df: pd.DataFrame) -> None:
         # The key includes editor_version as well as notes_version: an edit in the field grid changes "Goes to"
         # here too, so this table must also start fresh when the grid's version changes.
         nkey = f"notes_editor_{ss.editor_version}_{ss.get('notes_version', 0)}"
+        # Every row shown (height="content"), like the field grid: a table scrolled inside itself would jump back
+        # to its first row after each edit, which gives it a new key (1.0.2).
         st.data_editor(notes_df, key=nkey, on_change=on_columns_edit, args=(nkey, columns), hide_index=True,
-                       num_rows="fixed", width="stretch", disabled=["Column", "Sample values", COL_CHECK],
+                       num_rows="fixed", width="stretch", height="content",
+                       disabled=["Column", "Sample values", COL_CHECK],
                        column_config={
                            "Column": st.column_config.TextColumn(pinned=True),
                            "Sample values": st.column_config.TextColumn(width="medium"),
