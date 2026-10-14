@@ -3,7 +3,7 @@
 For whoever picks Customer Records up next: a person, or Claude in a new chat. It records what the code and the
 other documents don't: how changes are made and delivered, the decisions the business made, and what is still open.
 
-**State:** version 1.0.2, the first prototype (see [CHANGELOG.md](CHANGELOG.md)), based on file-converter 0.21.2.
+**State:** version 1.1.0, the first prototype (see [CHANGELOG.md](CHANGELOG.md)), based on file-converter 0.21.2.
 About 1,100 tests. Repository: github.com/noahlevitt/data-warehouse, with its own git history: it started from the
 converter's files, not from its history (section 5).
 Owner: Noah Levitt. Last updated 2026-10-14. Update this file with every release (section 4 in particular).
@@ -62,9 +62,8 @@ change them only when a converter fix is ported in (section 5).
 
 **Delivery** (when the changes can't be pushed directly)
 - Changes go to Noah as a git bundle, `data-warehouse-updateN.bundle`, numbered in order. The repository itself
-  came as `data-warehouse-1.0.0.bundle` (complete, no prerequisites); 1.0.1 came as `data-warehouse-update1.bundle`
-  and 1.0.2 as `data-warehouse-update2.bundle`, so the next is `data-warehouse-update3.bundle`. Update this line
-  with each bundle.
+  came as `data-warehouse-1.0.0.bundle` (complete, no prerequisites); 1.0.1 came as update1, 1.0.2 as update2 and
+  1.1.0 as update3, so the next is `data-warehouse-update4.bundle`. Update this line with each bundle.
 
   ```bash
   git bundle create ../data-warehouse-updateN.bundle main vX.Y.Z ^vPREVIOUS
@@ -107,6 +106,7 @@ Decided by Noah on 2026-10-14 unless marked otherwise. Don't reverse one without
 | Consent in exports | Not sent (blank): opt-outs are per business and the main system handles them; once connected, it will know who is opted in or out. Records keep the file's consent. |
 | Before tagging (later) | Deduplicate, check that numbers are cell phones, and remove numbers on the Do Not Call list unless within an 18-month established business relationship. Depends on the main system; not built. |
 | Platform | A web app or something launched on the computer, Mac first, Windows too. Built as the converter: a local web app (`./run_local.sh`), Docker for a server. |
+| Finds | Nothing is ever required; a blank Find shows every record. The common finds are a business, a business and one or more services, and a business without a service (an Omit request), so each request has Business and Services pickers; a business isn't required either (e.g. a phone number alone). Dates by day or range, also open-ended: `...1/1/2026` up to that day, `1/1/2025...` from it. Every record has its own ID and a creation date, both searchable. (Noah, 2026-10-14, after trying 1.0.2.) |
 | Repository | A brand-new project and repository, github.com/noahlevitt/data-warehouse, with its own commit history (not file-converter's). |
 | Port | 8502. The file converter keeps running on 8501 on the same computer, so the two must never share a port (1.0.1). |
 
@@ -129,6 +129,10 @@ Customer Records (the repository is `data-warehouse`), and version 1.0.0.
 - 1.0.0 was planned in one conversation (2026-10-14): Noah described the tool; four questions were asked (database,
   consent in exports, rows without numbers, tags per business) and answered; everything else was built on the
   plan in section 2, as a prototype ("there will be plenty of changes later").
+- Then Noah tried it and asked for changes, one at a time, each its own version: port 8502 (1.0.1), the mapping
+  tables jumping to the top (1.0.2), finds with nothing required, business/service pickers, open-ended ranges and
+  Record ID / created (1.1.0). The Find form's layout (a box per field, later requests folded, More criteria for the
+  rest, Enter = Find) was chosen while building 1.1.0 and is easy to change.
 
 ## 4. Open items
 
@@ -152,6 +156,16 @@ Customer Records (the repository is `data-warehouse`), and version 1.0.0.
   to their first row after every edit (reported here on 1.0.1, fixed in 1.0.2). The fix is `height="content"` on
   both `st.data_editor` calls in `app.py` (they get a new key on every edit, so a table scrolled inside itself
   loses its position); `tests/test_mapping_tables.py` checks it. Not yet done in file-converter.
+- **Independent test of 1.1.0** (check 6, a separate Claude agent, from the README, user guide and the syntax): it
+  found eight defects, all fixed before release and covered by `tests/test_records_find_edges.py` (section "found by
+  the independent test of 1.1.0"), `test_records_find.py` and `test_records_app.py`: typing a business ID and Enter
+  picked every fuzzy match ("1001" also took "1001 Nights Cafe"); clicking the chosen Omit again turned the request
+  into a Find; `…` and `..` read as something else without a word; a typo in Constrain/Extend replaced the found set
+  for good; years after 9998 and huge numbers gave the error page; a More criteria row without a Field said
+  "'nan'"; ranges within one day or month called backwards; Phone problem ranges found records without a problem.
+  Also from it: the How to search panel now has its own text for people (`criteria.SYNTAX`), text ranges take in
+  everything starting with their upper end (`a...m` includes Miller), blank Constrain/Extend change nothing.
+  It also confirmed 300 random multi-request finds against FileMaker's rules.
 - Limits known and accepted: [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
 ## 5. Taking fixes from the file converter
