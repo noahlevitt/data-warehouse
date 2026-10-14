@@ -16,7 +16,8 @@ brew services start postgresql@17
 ./run_local.sh
 ```
 
-Then open http://localhost:8501. The app creates its database on first start. There is no login for now.
+Then open http://localhost:8502 (port 8502, so the file converter can keep running on 8501). The app creates its
+database on first start. There is no login for now.
 **Tests:** `.venv/bin/python -m pytest -q` (PostgreSQL must be installed; the tests start their own server).
 
 ## Documentation
@@ -190,15 +191,17 @@ When PostgreSQL isn't running, the app says so and how to start it.
 ### On one computer (no Docker)
 
 Install Python 3.11+ and PostgreSQL, then run `./run_local.sh` (Mac/Linux) or `run_local.bat` (Windows). It opens at
-http://localhost:8501. The first run installs the packages (a minute or two); after an update, `run_local.sh`
-installs them again by itself when they changed.
+http://localhost:8502, next to the file converter on 8501 (`PORT=8600 ./run_local.sh` for another port). The first
+run installs the packages (a minute or two); after an update, `run_local.sh` installs them again by itself when they
+changed.
 
 ### On a server (for the team)
 
 Docker: `cp .env.example .env` (set `POSTGRES_PASSWORD`, optionally `ANTHROPIC_API_KEY`), `mkdir -p data && sudo
 chown 1000 data`, `docker compose up -d --build`. Put it behind HTTPS (Caddy) or a VPN, and turn logins on
 (`AUTH_MODE=password`): the records hold customers' phone numbers. See
-[docs/converter/OPERATIONS.md](docs/converter/OPERATIONS.md) for Caddy, users and troubleshooting.
+[docs/converter/OPERATIONS.md](docs/converter/OPERATIONS.md) for Caddy, users and troubleshooting; this app's port
+is 8502 where that document says 8501 (e.g. `reverse_proxy localhost:8502`).
 
 ### Backups
 
@@ -230,6 +233,7 @@ Customer Records' own:
 | `EXPORT_SCHEMA_PATH` | `SCHEMA_PATH` (`schemas/target_schema.yaml`) | the format tags export into |
 | `DEFAULT_PAGE` | `new` | first page: `new`, `imports` or `find` |
 | `APP_TITLE` | Customer Records | browser tab title |
+| `PORT` | 8502 | `run_local.sh` only: the port (the file converter keeps 8501); not read from `.env` |
 
 The converter's settings work as before (`ANTHROPIC_API_KEY`, `AI_*`, `MAPPING_MODEL`, `IMPORT_WORKERS`,
 `FILE_RETENTION_DAYS`, `APP_TIMEZONE`, `AUTH_MODE`, `ADMIN_*`, `DATA_DIR`): see
