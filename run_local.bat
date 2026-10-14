@@ -3,7 +3,8 @@ REM Run Customer Records on this computer without Docker (Windows). Needs Python
 REM PostgreSQL (installer from postgresql.org); set DATABASE_URL in .env with the password chosen there, e.g.
 REM DATABASE_URL=postgresql://postgres:YOUR-PASSWORD@localhost:5432/customer_records
 REM
-REM Usage: double-click this file (or run it from a Command Prompt), then open http://localhost:8501.
+REM Usage: double-click this file (or run it from a Command Prompt), then open http://localhost:8502.
+REM (Port 8502, not Streamlit's usual 8501, so the file converter can keep running on 8501.)
 REM Stop it by closing the window or pressing Ctrl+C.
 REM First run: creates a virtual environment in .venv\ and installs requirements.txt into it, and copies
 REM .env.example to .env. After an update, install the packages again with:
@@ -20,4 +21,4 @@ if not exist .venv (
 )
 REM Settings file: created from the template on first run.
 if not exist .env copy .env.example .env
-.venv\Scripts\streamlit run app.py --server.port 8501
+.venv\Scripts\streamlit run app.py --server.port 8502
