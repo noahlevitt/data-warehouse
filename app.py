@@ -1,18 +1,21 @@
-"""Import File Converter — internal web app (the Streamlit entry point).
+"""Customer Records — internal web app (the Streamlit entry point). Built on the file converter (0.21.2).
 
-Pages: New import · Imports (tracker, progress, results, side-by-side comparison) · Number history · Templates
-· Target format · Users (admins only)
+Pages: New import · Imports (tracker, progress, results, side-by-side comparison) · Find · Tags · Businesses ·
+Services · Templates · Fields · Users (admins only, when logins are on)
 
-Run locally:   streamlit run app.py
+Run locally:   ./run_local.sh   (needs PostgreSQL; see README.md → Database)
 Run on server: docker compose up -d   (see README.md)
 
 What it does
 ------------
-A user uploads a customer/contact file (CSV, TSV, TAB, TXT, XLSX, XLSM, XLSB, XLS, ODS) and the app converts it
-into the fixed import format described in schemas/target_schema.yaml: 10-digit US phone numbers (one row per
-different number), activity timestamps as MM/DD/YYYY HH:MM AM/PM, birthday/anniversary as MM/DD/YYYY with year
-1600 when the file has no real year, and consent only when a person maps it. All of those rules live in the
-`converter` package; this file is only the web UI on top of it. Claude is optional and only called when someone
+A user picks the business and service, uploads a customer/contact file (CSV, TSV, TAB, TXT, XLSX, XLSM, XLSB,
+XLS, ODS) and reviews how its columns map to the record fields of schemas/records_schema.yaml. The import is
+converted exactly as the file converter does (10-digit US phone numbers, dates in any format, 1600 for birthdays
+without a year, consent only when a person maps it) and every file row is stored as a record in PostgreSQL
+(records.importer). Records are found with FileMaker-style requests (Find), collected in tags (one business per
+tag), and a tag exports its unique phone numbers in the converter's import format (schemas/target_schema.yaml).
+The conversion rules live in the `converter` package, the records in the `records` package; this file is the web
+UI on top of both, and the new pages are drawn by records/ui.py. Claude is optional and only called when someone
 clicks a Claude button (or when AI_AUTO_MAP is on).
 
 How this file is organised (top to bottom)
@@ -26,8 +29,9 @@ How this file is organised (top to bottom)
 4. Imports: the list page with live progress (page_imports / _import_list) and the page for one import
    (page_import_detail → _live_progress while running, _completed_view when done, with the side-by-side view,
    the mistake check and Claude value fixes).
-5. The Number history, Templates, Target format and Users pages.
+5. The Templates, Fields and Users pages (Number history is the converter's and not shown: records replace it).
 6. Navigation: st.navigation picks the page from the URL, the sidebar is drawn, and nav.run() runs the page.
+   Find, Tags, Businesses and Services are records/ui.py functions, given a records.ui.Ctx.
 
 How a request flows
 -------------------
@@ -37,12 +41,19 @@ the run, the pages are registered, and nav.run() calls the one page function for
 must survive between runs lives in st.session_state (aliased `ss` below): the uploaded file and its read result,
 the mapping being reviewed, Claude results, and the "version" counters described next.
 
-New import: upload → load_and_map() reads the file, profiles the columns and suggests a mapping (saved template,
-then rules, then optionally Claude) → the reviewer edits it in two data editors (the field grid, and "Columns in
-your file"), optionally applies notes with Claude or runs a mistake check → start_import() saves the template,
-creates the import record plus a stored copy of the file, and hands the id to the runner → the browser is sent
-to that import's page. The conversion itself runs in a background thread (converter.jobs), which writes progress
-to the database; the Imports pages poll it with st.fragment(run_every=...) until it finishes.
+New import: business + service → upload → load_and_map() reads the file, profiles the columns and suggests a
+mapping (saved template, then rules, then optionally Claude) → the reviewer edits it in two data editors (the field
+grid, and "Columns in your file"), optionally applies notes with Claude or runs a mistake check → start_import()
+saves the template, registers the import in PostgreSQL (business, service, file), creates the job record plus a
+stored copy of the file, and hands the id to the runner → the browser is sent to that import's page. The
+conversion itself runs in a background thread (converter.jobs, with records.importer.RecordSink storing the
+records), which writes progress to data/converter.db; the Imports pages poll it with st.fragment(run_every=...)
+until it finishes.
+
+Two databases: data/converter.db (SQLite, as in the converter) holds the app's own state — import jobs and their
+progress, templates, drafts, users, display preferences. PostgreSQL holds the business data — businesses,
+services, imports (linked to their job by job_id), records, tags. An import's job keeps the PostgreSQL import id in
+its read options ("records_import_id").
 
 Widget-key versioning (why some keys end in a number)
 ----------------------------------------------------
@@ -66,7 +77,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from converter import __version__
+from converter import __version__ as ENGINE_VERSION
 from converter.ai import AIError
 from converter.auth import logout, require_login
 from converter.compare import (FILTERS, build_compare_html, column_plan, comparison_xlsx, field_change_summary,
@@ -87,20 +98,28 @@ from converter.services import (check_for_mistakes, initial_mapping, make_assist
                                 validate_repairs)
 from converter.storage import ImportRecord, Store
 from converter.ui_format import fmt_dt, fmt_duration, fmt_eta, fmt_size, status_color, status_text
+from records import __version__
+from records import ui as records_ui
+from records.config import get_records_settings
+from records.db import Database, DatabaseError, ensure_database
+from records.importer import RecordSink
+from records.store import RecordStore
 
 log = logging.getLogger("app")
 
 # Browser tab title and the heading of the login form; override with APP_TITLE in .env.
-APP_TITLE = os.getenv("APP_TITLE", "Import File Converter")
+APP_TITLE = os.getenv("APP_TITLE", "Customer Records")
 # All server settings (paths, worker count, retention, Claude options…) come from environment variables / .env.
 settings = get_settings()
+# Customer Records' own: DATABASE_URL, the record fields file and the export format file (records/config.py).
+rsettings = get_records_settings()
 # Zone used to *display* timestamps in the app (uploaded, started, last sign-in…). Not the same thing as the
 # per-import "client time zone" the reviewer picks, which controls how times inside the file are converted.
 TZ = settings.timezone
 
 # Must be the first Streamlit call that draws anything (Streamlit raises otherwise), so it runs before the
 # login form and before any page.
-st.set_page_config(page_title=APP_TITLE, page_icon="🔄", layout="wide")
+st.set_page_config(page_title=APP_TITLE, page_icon="🗂️", layout="wide")
 
 
 # ---------------------------------------------------------------------------
@@ -226,21 +245,38 @@ def get_store() -> Store:
 
 
 @st.cache_resource
+def get_records_db() -> tuple[Database, list[str]]:
+    """Return the one PostgreSQL connection pool (records.db.Database) and the warnings of its setup.
+
+    On the first call the database is created if it doesn't exist (when the server allows it) and its tables and
+    record-field columns are created or extended from the record fields file (Database.setup). Adding a field to
+    schemas/records_schema.yaml therefore needs a restart of the app to get its column. Raises DatabaseError (with
+    what to do) when PostgreSQL can't be reached; the module-level setup shows it on the page.
+    """
+    ensure_database(rsettings.database_url)
+    db = Database(rsettings.database_url)
+    return db, db.setup(load_schema(rsettings.records_schema_path))
+
+
+@st.cache_resource
 def get_runner() -> ImportRunner:
     """Return the one background ImportRunner (thread pool) for this server process.
 
     Creating it has side effects, which is why it must only happen once: imports that were queued or running when
-    the server last stopped are marked "interrupted" (they can't resume), stored files older than
-    FILE_RETENTION_DAYS are purged, and the numbers of earlier imports are recorded for the Number history page
-    (in the background). IMPORT_WORKERS sets how many imports convert at the same time; the rest wait in the queue.
+    the server last stopped are marked "interrupted" (they can't resume) and stored files older than
+    FILE_RETENTION_DAYS are purged. IMPORT_WORKERS sets how many imports convert at the same time; the rest wait in
+    the queue. Its sink (records.importer.RecordSink) stores each import's rows as records in PostgreSQL, instead of
+    the converter's number history (not used here: the records themselves are the history).
     """
+    db, _ = get_records_db()
     return ImportRunner(get_store(), workers=settings.import_workers, retention_days=settings.file_retention_days,
-                        record_days=settings.number_record_days)
+                        record_days=settings.number_record_days, backfill=False,
+                        sink=RecordSink(RecordStore(db), get_store()))
 
 
 @st.cache_resource
 def _schema_cache(path: str, mtime: float) -> TargetSchema:
-    """Load and validate the target-format YAML at `path`.
+    """Load and validate the schema YAML at `path` (the record fields, or the export format).
 
     `mtime` is not used in the body: it is only part of the cache key, so saving the YAML file (new modification
     time) produces a cache miss and the new format is loaded without restarting the server.
@@ -249,13 +285,20 @@ def _schema_cache(path: str, mtime: float) -> TargetSchema:
 
 
 def get_schema() -> TargetSchema:
-    """Return the current target schema, reloading it automatically when the YAML file has changed.
+    """Return the record fields (schemas/records_schema.yaml), reloading them when the YAML file has changed.
 
-    Raises whatever load_schema raises for a missing or invalid file; the module-level setup below turns that
-    into a readable error on the page.
+    This is what files are mapped to on New import and what the import converts to. A new field also needs a
+    restart for its database column (get_records_db). Raises whatever load_schema raises for a missing or invalid
+    file; the module-level setup below turns that into a readable error on the page.
     """
-    path = settings.schema_path
+    path = rsettings.records_schema_path
     return _schema_cache(str(path), path.stat().st_mtime)  # reloads automatically when the YAML changes
+
+
+def get_export_schema() -> TargetSchema:
+    """Return the import format tags export into (EXPORT_SCHEMA_PATH, default schemas/target_schema.yaml)."""
+    path = rsettings.export_schema_path
+    return _schema_cache(str(path), path.stat().st_mtime)
 
 
 @st.cache_resource
@@ -300,12 +343,20 @@ def rejects_download(path: str, mtime: float) -> bytes:
 
 # Module-level setup, run on every rerun (cheap: the resources above are cached).
 store = get_store()
-runner = get_runner()
 try:
     schema = get_schema()
+    export_schema = get_export_schema()
 except Exception as exc:  # bad YAML should be obvious, not a stack trace
-    st.error(f"The target schema file could not be loaded ({settings.schema_path}): {exc}")
+    st.error(f"A schema file could not be loaded ({rsettings.records_schema_path} / {rsettings.export_schema_path}):"
+             f" {exc}")
     st.stop()
+try:
+    rdb, db_warnings = get_records_db()
+except (DatabaseError, ValueError) as exc:  # PostgreSQL not running, or a record field that can't be a column
+    st.error(str(exc))
+    st.stop()
+records = RecordStore(rdb)
+runner = get_runner()
 assistant = get_assistant()
 # Before sign-in there is no user preference yet: apply the mode last chosen in this browser (if any), so the login
 # page already matches.
@@ -385,7 +436,8 @@ def draft_state() -> dict:
     return {"read_args": ss.get("read_args") or {"sheet": None, "header_row": "auto"},
             "mapping": ss.mapping.model_dump(mode="json"), "map_meta": ss.map_meta,
             "template_name": ss.get(template_key(), ss.get("template_name")), "timezone": ss.get("timezone"),
-            "ai_used": bool(ss.get("ai_used")), "remember": ss.get("remember_mapping", True)}
+            "ai_used": bool(ss.get("ai_used")), "remember": ss.get("remember_mapping", True),
+            "business": ss.get("imp_business"), "service": ss.get("imp_service")}
 
 
 def save_draft() -> None:
@@ -446,6 +498,11 @@ def restore_draft(draft_id: str) -> None:
     ss.timezone = saved.get("timezone") if saved.get("timezone") in ZONE_LABEL else "America/New_York"
     ss.ai_used = bool(saved.get("ai_used"))
     ss.remember_pref = bool(saved.get("remember", True))
+    # Business and service chosen before the refresh (Customer Records), unless chosen again since.
+    if saved.get("business") and not ss.get("imp_business"):
+        ss.imp_business = saved["business"]
+    if saved.get("service") and not ss.get("imp_service"):
+        ss.imp_service = saved["service"]
     ss.multi_cells, ss.pending, ss.notes_result, ss.check_result, ss.edit_errors = {}, None, None, None, []
     ss.draft_saved = json.dumps(saved, sort_keys=True)
     ss.editor_version += 1
@@ -601,6 +658,9 @@ def start_import() -> int:
       results still make sense after someone edits the YAML.
     - The id is handed to the background runner, which converts the file in a worker thread. This function
       returns straight away; the page then switches to the import's detail view to follow its progress.
+    - Customer Records: the import is first registered in PostgreSQL with the chosen business and service and the
+      file's SHA-1 (records.store.create_import, status "queued"); its id goes into the job's read options
+      ("records_import_id"), where the runner's sink finds it to store the records.
     """
     rr = ss.read
     tpl_name = None
@@ -618,10 +678,14 @@ def start_import() -> int:
         store.save_template(tpl_name, list(rr.df.columns), ss.mapping.without_manual(schema), read_options,
                             schema.name, user["username"])
         store.mark_template_used(tpl_name)
+    rec_id = records.create_import(ss.imp_business, int(ss.imp_service), ss.file_name, ss.file_sig[1], rr.sheet,
+                                   user["username"])
     import_id = store.create_import(
         username=user["username"], filename=ss.file_name, data=ss.file_bytes, schema_label=schema.label,
-        schema_json=schema.model_dump_json(), mapping=ss.mapping, read_options=read_options, template_name=tpl_name,
+        schema_json=schema.model_dump_json(), mapping=ss.mapping,
+        read_options=dict(read_options, records_import_id=rec_id), template_name=tpl_name,
         ai_used=bool(ss.get("ai_used")))
+    records.set_job(rec_id, import_id)
     runner.submit(import_id)
     return import_id
 
@@ -645,6 +709,10 @@ def rerun_import(rec: ImportRecord, overrides: dict | None = None, ai_used: bool
     The *current* schema is used rather than the old import's snapshot, so a re-run picks up changes to the target
     format. The read options (sheet, header row, client time zone) are reused as they were. Writes a new import
     row and file copy to the database / data folder, queues it on the runner, and returns the new id.
+
+    Customer Records: the re-run is registered as a new import in PostgreSQL for the same business and service.
+    Callers only offer a re-run when the import has no records stored (it didn't complete, or its records were
+    deleted; see can_rerun), so a re-run never stores the same rows twice.
     """
     data = store.source_path(rec).read_bytes()
     # Shallow copy: the per-field dicts inside rec.overrides are updated in place. That's harmless here because
@@ -652,13 +720,38 @@ def rerun_import(rec: ImportRecord, overrides: dict | None = None, ai_used: bool
     merged = dict(rec.overrides)
     for k, v in (overrides or {}).items():
         merged.setdefault(k, {}).update(v)
+    old = records.get_import(int(rec.read_options["records_import_id"]))
+    rec_id = records.create_import(old["business_id"], old["service_id"], rec.filename, old["file_sha1"],
+                                   rec.read_options.get("sheet"), user["username"])
     new_id = store.create_import(
         username=user["username"], filename=rec.filename, data=data, schema_label=schema.label,
-        schema_json=schema.model_dump_json(), mapping=mapping or rec.mapping, read_options=rec.read_options,
+        schema_json=schema.model_dump_json(), mapping=mapping or rec.mapping,
+        read_options=dict(rec.read_options, records_import_id=rec_id),
         overrides=merged, template_name=rec.template_name,
         ai_used=rec.ai_used if ai_used is None else ai_used, parent_id=rec.id)
+    records.set_job(rec_id, new_id)
     runner.submit(new_id)
     return new_id
+
+
+def can_rerun(rec: ImportRecord) -> tuple[bool, str]:
+    """Whether an import can be re-run, and if not, why (Customer Records).
+
+    It needs its stored original file, a business and service (imports made in Customer Records have them), and no
+    records stored: a completed import's records must be deleted first, or its rows would be stored twice.
+    """
+    if rec.files_purged or not store.source_path(rec).exists():
+        return False, "The original file is no longer stored, so this import can't be re-run."
+    rid = rec.read_options.get("records_import_id")
+    if rid is None:
+        return False, "This import has no business and service, so it can't be re-run here."
+    imp = records.get_import(int(rid))
+    if imp is None:
+        return False, "This import's business or service no longer exists."
+    if imp["status"] == "completed":
+        return False, ("This import's records are stored. To run it again, delete its records first (below), "
+                       "so they aren't stored twice.")
+    return True, ""
 
 
 def open_import(import_id: int) -> None:
@@ -687,7 +780,7 @@ def page_new_import() -> None:
     conversion in the background and moves the browser to that import's page.
     """
     st.header("New import")
-    st.caption(f"Target format: **{schema.label}** · supported files: "
+    st.caption(f"Record fields: **{schema.label}** · supported files: "
                f"{', '.join(e.lstrip('.') for e in SUPPORTED_EXTENSIONS)}")
     # After a browser refresh session state is empty, but the URL still names the draft of the file being mapped.
     if not ss.get("file_name") and st.query_params.get("draft"):
@@ -697,6 +790,8 @@ def page_new_import() -> None:
     if ss.pop("draft_missing", False):
         st.caption("The mapping in progress from before the reload isn't kept any more (it was imported, cleared, "
                    "or unchanged for 24 hours). Upload the file again.")
+    # After the draft is restored: it may set the business and service, which must happen before their boxes exist.
+    _business_and_service()
 
     top = st.columns([4, 1], vertical_alignment="bottom")
     with top[0]:
@@ -727,15 +822,23 @@ def page_new_import() -> None:
         load_and_map()
 
     if not ss.get("file_name"):
-        st.info("Upload a CSV or Excel file. Columns are matched automatically and you review the mapping; the "
-                "import then runs in the background and appears under **Imports**, where you can follow its "
-                "progress and compare the original and converted files side by side.")
+        st.info("Choose the business and service, then upload a CSV or Excel file. Columns are matched "
+                "automatically and you review the mapping; the import then runs in the background and appears "
+                "under **Imports**, where you can follow its progress and compare the original and cleaned values "
+                "side by side. Every row of the file becomes a record you can search under **Find**.")
         return
     if ss.get("read_error"):
         st.error(ss.read_error)
         return
     rr = ss.read
     df = rr.df
+
+    # The same file already imported for this business: say so (importing it again stores its rows twice).
+    if ss.get("imp_business"):
+        for prev in records.same_file_imports(ss.imp_business, ss.file_sig[1]):
+            st.warning(f"This exact file was already imported for this business: import #{prev['job_id']} "
+                       f"({prev['service_name']}, {prev['records']:,} records). Importing it again stores its rows "
+                       "a second time.")
 
     # ---------------- Step 1: file
     st.subheader("1 · File")
@@ -866,8 +969,8 @@ def page_new_import() -> None:
             phones = [c for i, c in enumerate(phones) if i not in areas]
         multi = multi_number_cells(df, each, phones)
         if len(phones) > 1 or multi:
-            note = (f"ℹ️ A customer with different numbers in {', '.join(phones)} gets one row per number in "
-                    f"**{each.header}**, with the other columns copied from their original row.")
+            note = (f"ℹ️ A customer with different numbers in {', '.join(phones)} keeps all of them on one record "
+                    f"(**{each.header}**); each is searchable and goes into a tag's export once.")
             if multi:
                 note += (f" {multi:,} cell{'s hold' if multi != 1 else ' holds'} several numbers; each different "
                          "number counts (numbers labelled fax only when there is no other).")
@@ -877,8 +980,8 @@ def page_new_import() -> None:
     unused = [c for c in df.columns if c not in mapping.used_sources()]
     if unused:
         skipped = set(mapping.excluded_columns)
-        st.caption("Columns not imported: " + ", ".join(f"`{c}`" + (" (skipped)" if c in skipped else "")
-                                                         for c in unused))
+        st.caption("Columns that feed no field (kept on each record as written, searchable as *Column: …*): "
+                   + ", ".join(f"`{c}`" + (" (skipped)" if c in skipped else "") for c in unused))
 
     _notes_and_checks(df)
 
@@ -889,6 +992,10 @@ def page_new_import() -> None:
     if problems:
         st.warning("Fix before importing: " + "; ".join(f"**{schema.field(k).header}** — {v}"
                                                         for k, v in problems.items()))
+    # Customer Records: every import is for one business and one service (chosen at the top of the page).
+    if not (ss.get("imp_business") and ss.get("imp_service")):
+        problems = dict(problems, _business="choose the business and service at the top of the page")
+        st.warning("Choose the **business** and **service** at the top of the page before importing.")
     c1, c2, c3 = st.columns([1.2, 2.5, 1.3], vertical_alignment="bottom")
     # Files without a header row don't use templates at all: their stand-in column names (Column 1, Column 2…) say
     # nothing about the layout, so a template could only be matched to another client's file with as many columns.
@@ -911,6 +1018,31 @@ def page_new_import() -> None:
         open_import(import_id)
     # Everything above may have changed the mapping or the file's settings: keep them for a browser refresh.
     save_draft()
+
+
+def _business_and_service() -> None:
+    """Customer Records: the business and service every import is for, chosen at the top of New import.
+
+    The choices (ss.imp_business: business ID, ss.imp_service: service id) stay for the next file, since several
+    files of one business are often imported in a row. Only active services are offered. When there are no
+    businesses or services yet, the page says where to add them.
+    """
+    businesses = records.list_businesses()
+    services = records.list_services(active_only=True)
+    c1, c2 = st.columns(2)
+    ids = [b["id"] for b in businesses]
+    names = {b["id"]: f"{b['id']} · {b['name']}" for b in businesses}
+    if ss.get("imp_business") not in ids:
+        ss.pop("imp_business", None)
+    c1.selectbox("Business", ids, index=None, key="imp_business", format_func=names.get,
+                 placeholder="Choose the business" if ids else "No businesses yet — add them under Businesses",
+                 help="The business these customers belong to (its ID is the main system's).")
+    sids = [s["id"] for s in services]
+    snames = {s["id"]: s["name"] for s in services}
+    if ss.get("imp_service") not in sids:
+        ss.pop("imp_service", None)
+    c2.selectbox("Service", sids, index=None, key="imp_service", format_func=snames.get,
+                 placeholder="Choose the service" if sids else "No services yet — add them under Services")
 
 
 # Column headers of the "Columns in your file" table (one row per column of the uploaded file).
@@ -1056,7 +1188,8 @@ def _notes_and_checks(df: pd.DataFrame) -> None:
         st.caption("Change where a column goes with **Goes to** (clear it to leave the column out), or tick "
                    "**Skip** to keep a column out of the import completely — rules, saved templates and Claude "
                    "won't map it again. Picking a field here replaces whatever fed that field before — except "
-                   "the phone field: each phone column you add gives customers one row per different number. "
+                   "the phone field: each phone column you add is kept too (every different number stays on the "
+                   "record). Every column is also kept on the record as written. "
                    "You can also write a note on what a column is, where it goes or how to read it — e.g. "
                    "*“this is the last visit date”*, *“dates are day-first”*. "
                    + ("Claude applies the notes when you click *Apply notes*. " if assistant else
@@ -1256,18 +1389,21 @@ def _import_list(mine: bool, statuses: list[str], search: str, polling: bool) ->
     if not recs:
         st.info("No imports yet." if not (mine or statuses or search) else "No imports match these filters.")
         return
+    # Customer Records: each job's business, service and stored records, from PostgreSQL.
+    linked = records.imports_for_jobs([r.id for r in recs])
     table = pd.DataFrame([{
         "#": r.id,
         "File": r.filename,
+        "Business": f"{linked[r.id]['business_id']} · {linked[r.id]['business_name']}" if r.id in linked else "",
+        "Service": linked[r.id]["service_name"] if r.id in linked else "",
         "By": r.username,
-        "Status": status_text(r),
+        "Status": status_text(r) + (" · records deleted" if linked.get(r.id, {}).get("status") == "deleted" else ""),
         "Progress": r.progress,
         "Started": fmt_dt(r.started_at or r.created_at, TZ),
         "Duration": fmt_duration(r.elapsed()),
         "Rows": r.total_rows,
-        "Converted": r.imported,
-        "Bad rows": r.rejected,
-        "Duplicates": r.duplicates,
+        "Records": linked[r.id]["records"] if linked.get(r.id, {}).get("status") == "completed" else None,
+        "No usable number": linked[r.id]["no_phone"] if linked.get(r.id, {}).get("status") == "completed" else None,
         "Template": r.template_name or "",
     } for r in recs])
     st.caption("Select a row to open the import.")
@@ -1278,9 +1414,8 @@ def _import_list(mine: bool, statuses: list[str], search: str, polling: bool) ->
             "#": st.column_config.NumberColumn(width="small", format="%d"),
             "Progress": st.column_config.ProgressColumn(min_value=0, max_value=1, format="percent", width="small"),
             "Rows": st.column_config.NumberColumn(format="localized"),
-            "Converted": st.column_config.NumberColumn(format="localized"),
-            "Bad rows": st.column_config.NumberColumn(format="localized"),
-            "Duplicates": st.column_config.NumberColumn(format="localized"),
+            "Records": st.column_config.NumberColumn(format="localized"),
+            "No usable number": st.column_config.NumberColumn(format="localized"),
         },
     )
     # on_select="rerun": clicking a row starts a new run in which the selection is filled in, and we navigate to
@@ -1310,8 +1445,11 @@ def page_import_detail(import_id: int) -> None:
         return
 
     st.header(f"Import #{rec.id} · {rec.filename}")
+    linked = records.imports_for_jobs([rec.id]).get(rec.id)
+    if linked:
+        st.markdown(f"**{linked['business_id']} · {linked['business_name']}** · {linked['service_name']}")
     meta = [f"by **{rec.username}**", f"uploaded {fmt_dt(rec.created_at, TZ)}", fmt_size(rec.file_size),
-            f"target: {rec.schema_label}"]
+            f"fields: {rec.schema_label}"]
     if rec.template_name:
         meta.append(f"template: {rec.template_name}")
     if rec.ai_used:
@@ -1374,11 +1512,13 @@ def _rerun_button(rec: ImportRecord) -> None:
     missing on disk. Clicking creates a new import with the same file and mapping but the current target format
     (see rerun_import), and opens it.
     """
-    if rec.files_purged or not store.source_path(rec).exists():
-        st.caption("The original file is no longer stored, so this import can't be re-run.")
+    ok, why = can_rerun(rec)
+    if not ok:
+        st.caption(why)
         return
     if st.button("↻ Re-run this import", help="Runs the same original file and mapping again with the current "
-                                              "target format. Creates a new import."):
+                                              "record fields, for the same business and service. Creates a new "
+                                              "import."):
         open_import(rerun_import(rec))
 
 
@@ -1403,27 +1543,39 @@ def _completed_view(rec: ImportRecord) -> None:
     """
     rec_schema = TargetSchema.model_validate_json(rec.schema_json)
     s = rec.summary
-    if rec.rejected:
-        st.error(f"**{rec.rejected:,} bad row{'s were' if rec.rejected != 1 else ' was'} NOT imported.** "
-                 "See *Side by side → Bad rows* or download *Rejected rows* for the reason on each row.  \n"
-                 + s.get("message", ""), icon="⚠️")
-    elif not rec.imported:
-        st.error("No rows could be converted. " + s.get("message", ""))
+    rs = s.get("records") or {}
+    linked = records.imports_for_jobs([rec.id]).get(rec.id)
+    deleted = bool(linked and linked["status"] == "deleted")
+    if deleted:
+        st.warning("This import's records were deleted. The file and the side-by-side view are kept until the files "
+                   "are purged; it can be run again (below).")
+    elif rec.rejected:
+        st.error(f"**{rec.rejected:,} row{'s were' if rec.rejected != 1 else ' was'} NOT stored.** "
+                 "See *Side by side → Bad rows* for the reason on each row.", icon="⚠️")
+    elif not rs.get("stored"):
+        st.error("No records were stored. " + s.get("message", ""))
     else:
-        st.success(s.get("message", "Completed."), icon="✅")
+        st.success(f"{rs['stored']:,} record{'s' if rs['stored'] != 1 else ''} stored, with {rs.get('numbers', 0):,} "
+                   f"different phone number{'s' if rs.get('numbers', 0) != 1 else ''}"
+                   + (f"; {rs['no_phone']:,} without a usable number (searchable, never exported)"
+                      if rs.get("no_phone") else "") + ".", icon="✅")
     for w in s.get("warnings", []):
         st.caption("ℹ️ File note: " + w)
+    if rs.get("first_visit_as"):
+        st.caption(f"ℹ️ The file has no last-activity date, so tag exports use its sign-up / creation date as "
+                   f"**{rs['first_visit_as']}**, as the converter does.")
 
     m = st.columns(6)
     m[0].metric("Rows in file", f"{rec.total_rows:,}")
-    extra = s.get("extra_rows", 0)
-    m[1].metric("Converted", f"{rec.imported:,}",
-                help=f"Includes {extra:,} extra row{'s' if extra != 1 else ''} for customers with more than one "
-                     "phone number (one row per number)." if extra else None)
-    m[2].metric("Bad rows", f"{rec.rejected:,}")
-    m[3].metric("Duplicates removed", f"{rec.duplicates:,}")
+    m[1].metric("Records stored", f"{rs.get('stored', 0):,}")
+    m[2].metric("Phone numbers", f"{rs.get('numbers', 0):,}", help="Different usable numbers in this file.")
+    m[3].metric("No usable number", f"{rs.get('no_phone', 0):,}",
+                help="Stored and searchable; never in a tag's export.")
     m[4].metric("Empty rows", f"{rec.blank_rows:,}")
     m[5].metric("Took", fmt_duration(rec.elapsed()))
+    if linked and not deleted and st.button("Show this import's records in Find"):
+        records_ui.go_find(ctx, {"t": "find", "requests": [{"omit": False, "criteria": [["import", str(rec.id)]]}]},
+                           f"Import #{rec.id} · {rec.filename}")
 
     if rec.files_purged:
         st.info(f"The files for this import were deleted after {settings.file_retention_days} days. "
@@ -1437,8 +1589,10 @@ def _completed_view(rec: ImportRecord) -> None:
     d = st.columns(5)
     out_p = store.file_path(rec, "output")
     if out_p:
-        d[0].download_button(f"⬇ Converted file ({rec.imported:,})", out_p.read_bytes(), out_p.name, type="primary",
-                             width="stretch", on_click="ignore", disabled=not rec.imported)
+        d[0].download_button(f"⬇ Cleaned rows ({rec.imported:,})", out_p.read_bytes(), out_p.name,
+                             width="stretch", on_click="ignore", disabled=not rec.imported,
+                             help="The cleaned values, one row per phone number (for checking; tags export from "
+                                  "the records).")
     rej_p = store.file_path(rec, "rejects")
     if rej_p:
         # The rejected-rows file holds duplicates as well as bad rows, so both are counted on the button.
@@ -1469,7 +1623,7 @@ def _completed_view(rec: ImportRecord) -> None:
                                        f"Import #{rec.id} — {rec.filename} → {rec.schema_label}")
         st.rerun()
 
-    tabs = st.tabs(["Side by side", "What changed", "Converted file", "Bad & duplicate rows", "Mapping used"])
+    tabs = st.tabs(["Side by side", "What changed", "Cleaned rows", "Rows not stored", "Mapping used"])
     with tabs[0]:
         _side_by_side(rec, rec_schema, src_df, audit, plan)
     with tabs[1]:
@@ -1543,6 +1697,28 @@ def _completed_view(rec: ImportRecord) -> None:
         _rerun_button(rec)
     with b:
         _repair_section(rec, rec_schema, audit)
+    if linked and not deleted:
+        _delete_records_section(rec, linked)
+
+
+def _delete_records_section(rec: ImportRecord, linked: dict) -> None:
+    """Customer Records: delete this import's records (e.g. to fix the mapping and run it again).
+
+    Deleting removes the records from every tag they are in (each tag's history says so). The import stays listed,
+    marked "records deleted", and can then be re-run. Asks for a tick first.
+    """
+    with st.expander("Delete this import's records"):
+        hit = records.db.fetch("""SELECT t.name, count(*) AS n FROM tag_records tr JOIN records r ON r.id = tr.record_id
+                                  JOIN tags t ON t.id = tr.tag_id WHERE r.import_id = %s GROUP BY t.name""",
+                               (linked["id"],))
+        st.caption(f"Deletes the {linked['records']:,} records of this import"
+                   + (" and takes them out of these tags: " + ", ".join(f"{h['name']} ({h['n']:,})" for h in hit)
+                      if hit else "") + ". The import can then be run again with a corrected mapping.")
+        sure = st.checkbox("Yes, delete these records", key=f"del_imp_ok_{rec.id}")
+        if st.button("Delete records", disabled=not sure, key=f"del_imp_{rec.id}"):
+            res = records.delete_import(linked["id"], user["username"])
+            st.success(f"Deleted {res['records']:,} records.")
+            st.rerun()
 
 
 @st.cache_data(max_entries=6, show_spinner=False)
@@ -1597,8 +1773,10 @@ def _import_check_section(rec: ImportRecord, rec_schema: TargetSchema, src_df: p
         if not diff.empty:
             st.markdown("**Claude's suggested mapping changes**")
             st.dataframe(diff, hide_index=True, width="stretch")
-            can_rerun = not rec.files_purged and store.source_path(rec).exists()
-            if st.button("Re-run the import with these changes", type="primary", disabled=not can_rerun,
+            ok, why = can_rerun(rec)
+            if not ok:
+                st.caption(why)
+            if st.button("Re-run the import with these changes", type="primary", disabled=not ok,
                          key=f"rerun_{ckey}"):
                 # Same selection as Accept on New import: only fields that really change (matched by output
                 # header, as shown in the diff), merged onto the old mapping so its notes and skipped columns stay.
@@ -1704,8 +1882,11 @@ def _repair_section(rec: ImportRecord, rec_schema: TargetSchema, audit: pd.DataF
                 rows += [{"Field": h, "Original": a, "Fix": "", "Status": "can't be fixed"} for a in p["unfixable"]]
             st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
             n_ok = sum(len(p["accepted"]) for p in props.values())
+            ok, why = can_rerun(rec)
+            if n_ok and not ok:
+                st.caption(why)
             if n_ok and st.button(f"Apply {n_ok} fix{'es' if n_ok != 1 else ''} and re-run", type="primary",
-                                  key=f"apply_{rec.id}"):
+                                  key=f"apply_{rec.id}", disabled=not ok):
                 new_id = rerun_import(rec, overrides={k: p["accepted"] for k, p in props.items() if p["accepted"]},
                                       ai_used=True)
                 # Drop the proposals before leaving (open_import ends the run), so coming back to this import
@@ -1783,8 +1964,9 @@ def page_templates() -> None:
     who created the template, or an admin. The JSON download is a read-only export, for reference or backup.
     """
     st.header("Saved templates")
-    st.caption("A template remembers how one file layout maps to the target format. When a file with the same "
-               "columns is uploaded, its template is applied automatically.")
+    st.caption("A template remembers how one file layout maps to the record fields. When a file with the same "
+               "columns is uploaded, its template is applied automatically (the business and service are chosen "
+               "for each import).")
     templates = store.list_templates(schema.name)
     if not templates:
         st.info("No templates yet. They are saved when you start an import with 'Remember this mapping' on.")
@@ -1824,16 +2006,35 @@ def page_templates() -> None:
 
 
 def page_schema() -> None:
-    """Page "Target format": a read-only description of the current target schema (the YAML file).
+    """Page "Fields": the record fields every import is mapped to, and the import format tags export into.
 
-    Shows each output column in order (type, required, format, what happens to invalid values, special rules),
-    the output file settings, the duplicate rule and how long import files are kept. To change the format, edit
-    the YAML on the server; get_schema() notices the new modification time and reloads it.
+    Both are read-only descriptions of their YAML files (schemas/records_schema.yaml, schemas/target_schema.yaml):
+    each field in order (type, required, format, what happens to invalid values, special rules). To change them,
+    edit the YAML on the server; a new record field also needs a restart (its database column is added then).
     """
-    st.header("Target format")
-    st.markdown(f"**{schema.label}** — {schema.description}")
-    st.caption(f"Defined in `{settings.schema_path}`. Edit that file on the server to change the target format; "
-               "the app picks up changes automatically.")
+    st.header("Fields")
+    st.markdown(f"**Record fields: {schema.label}** — {schema.description}")
+    st.caption(f"Defined in `{rsettings.records_schema_path}`. Every column of an imported file is also kept as "
+               "written (searchable as *Column: …* on Find). A new field needs a restart of the app.")
+    _schema_table(schema, record_fields=True)
+    st.markdown(f"**Tag export format: {export_schema.label}** — {export_schema.description}")
+    st.caption(f"Defined in `{rsettings.export_schema_path}` (the file converter's import format). A tag exports "
+               "one row per unique phone number; consent is left blank for now.")
+    _schema_table(export_schema, record_fields=False)
+    o = export_schema.output
+    # repr() makes invisible delimiters readable (a tab shows as '\t').
+    st.markdown(f"**Export file:** {o.format.upper()}"
+                + (f", delimiter `{repr(o.delimiter)}`, encoding {o.encoding}" if o.format == "csv" else "")
+                + (", header row included" if o.include_header else ", no header row"))
+    # The whole f-string is the "if" branch of the conditional expression; FILE_RETENTION_DAYS=0 or less means
+    # files are never purged.
+    st.markdown(f"**Stored files:** each import's original file and side-by-side data are kept for "
+                f"{settings.file_retention_days} days (the records stay)" if settings.file_retention_days > 0
+                else "**Stored files:** kept indefinitely")
+
+
+def _schema_table(sch: TargetSchema, record_fields: bool) -> None:
+    """One schema's fields as a table (see page_schema)."""
     def _notes(f) -> str:
         """Return the plain-English "Notes" cell for one schema field (FieldSpec `f`).
 
@@ -1851,31 +2052,21 @@ def page_schema() -> None:
             bits.append("date-only values get 12:00 AM")
         if f.type == "phone":
             bits.append("allowed: " + ", ".join(f.countries))
+            if record_fields:
+                bits.append("every different number of a row is kept on its record")
+        if f.creation_date:
+            bits.append("sign-up / creation date; stands in for the last activity in exports of files without one")
+        if not record_fields and f.name == "consent":
+            bits.append("blank in tag exports for now")
         return "; ".join(bits)
 
     st.dataframe(pd.DataFrame([{
-        "#": i + 1, "Output header": f.header, "Type": "always blank" if f.fixed_blank else f.type,
+        "#": i + 1, ("Field" if record_fields else "Output header"): f.header,
+        "Type": "always blank" if f.fixed_blank else f.type,
         "Required": "yes" if f.required else "", "Format": f.format or "",
         "If invalid": "" if f.fixed_blank else ("reject row" if f.on_invalid == "reject" else "leave blank"),
         "Notes": _notes(f),
-    } for i, f in enumerate(schema.fields)]), hide_index=True, width="stretch")
-    o = schema.output
-    # repr() makes invisible delimiters readable (a tab shows as '\t').
-    st.markdown(f"**Output file:** {o.format.upper()}"
-                + (f", delimiter `{repr(o.delimiter)}`, encoding {o.encoding}" if o.format == "csv" else "")
-                + (", header row included" if o.include_header else ", no header row"))
-    if schema.dedupe.keys:
-        st.markdown("**Duplicates:** a row is removed only when **all** of these match an earlier row: "
-                    + ", ".join(f"`{schema.field(k).header}`" for k in schema.dedupe.keys)
-                    + ". Rows with the same phone but any different date are kept.")
-    # The whole f-string is the "if" branch of the conditional expression; FILE_RETENTION_DAYS=0 or less means
-    # files are never purged.
-    st.markdown(f"**Stored files:** each import's original and converted files are kept for "
-                f"{settings.file_retention_days} days" if settings.file_retention_days > 0
-                else "**Stored files:** kept indefinitely")
-    st.markdown("**Number history:** each converted number, its consent value and the file row it came from are "
-                + (f"kept for {settings.number_record_days} days" if settings.number_record_days > 0
-                   else "kept indefinitely") + ", also after the files are deleted.")
+    } for i, f in enumerate(sch.fields)]), hide_index=True, width="stretch")
 
 
 def page_users() -> None:
@@ -1936,27 +2127,60 @@ def page_users() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Pages: Find, Tags, Businesses, Services (Customer Records; drawn by records/ui.py)
+# ---------------------------------------------------------------------------
+
+def page_find() -> None:
+    """Page "Find": find requests, the found set, tagging it (records.ui.page_find)."""
+    records_ui.page_find(ctx)
+
+
+def page_tags() -> None:
+    """Page "Tags": the tags, one tag (?tag=<id>) and its export (records.ui.page_tags)."""
+    records_ui.page_tags(ctx)
+
+
+def page_businesses() -> None:
+    """Page "Businesses": add and correct businesses (records.ui.page_businesses)."""
+    records_ui.page_businesses(ctx)
+
+
+def page_services() -> None:
+    """Page "Services": the services imports pick from (records.ui.page_services)."""
+    records_ui.page_services(ctx)
+
+
+# ---------------------------------------------------------------------------
 # Navigation
 # ---------------------------------------------------------------------------
 
 # Runs on every rerun, after login. The pages are declared here, at the end of the module, because st.Page needs
 # the page functions defined above; helpers such as open_import() refer to PAGE_IMPORTS only when they're called,
 # by which time it exists.
-_landing = os.getenv("DEFAULT_PAGE", "new")  # "new" or "imports": which page opens first
+_landing = os.getenv("DEFAULT_PAGE", "new")  # "new", "imports" or "find": which page opens first
+# What records/ui.py's pages need from here (the pages themselves are filled in below, once they exist).
+ctx = records_ui.Ctx(db=rdb, records=records, schema=schema, export=export_schema, user=user, tz=TZ,
+                     open_import=open_import)
 # url_path is the address of each page (e.g. /imports?id=12), so links and bookmarks keep working.
-PAGE_NEW = st.Page(page_new_import, title="New import", icon="⬆️", url_path="new", default=_landing != "imports")
+PAGE_NEW = st.Page(page_new_import, title="New import", icon="⬆️", url_path="new",
+                   default=_landing not in ("imports", "find"))
 PAGE_IMPORTS = st.Page(page_imports, title="Imports", icon="📋", url_path="imports", default=_landing == "imports")
-PAGE_NUMBERS = st.Page(page_numbers, title="Number history", icon="🔎", url_path="numbers")
+PAGE_FIND = st.Page(page_find, title="Find", icon="🔎", url_path="find", default=_landing == "find")
+PAGE_TAGS = st.Page(page_tags, title="Tags", icon="🏷️", url_path="tags")
+PAGE_BUSINESSES = st.Page(page_businesses, title="Businesses", icon="🏪", url_path="businesses")
+PAGE_SERVICES = st.Page(page_services, title="Services", icon="🧾", url_path="services")
 PAGE_TEMPLATES = st.Page(page_templates, title="Templates", icon="🧩", url_path="templates")
-PAGE_SCHEMA = st.Page(page_schema, title="Target format", icon="🎯", url_path="target-format")
+PAGE_SCHEMA = st.Page(page_schema, title="Fields", icon="🎯", url_path="fields")
 PAGE_USERS = st.Page(page_users, title="Users", icon="👥", url_path="users")
+ctx.pages.update(find=PAGE_FIND, tags=PAGE_TAGS, imports=PAGE_IMPORTS)
 
 # The Users page is only registered for admins, and only while logins are on (AUTH_MODE=password): without logins
 # accounts do nothing. That is the access control for it: a page that isn't passed to st.navigation can't be
-# opened, even by typing its URL.
+# opened, even by typing its URL. The converter's Number history page isn't registered: records replace it.
 logins_on = settings.auth_mode != "none"
-nav = st.navigation([PAGE_NEW, PAGE_IMPORTS, PAGE_NUMBERS, PAGE_TEMPLATES, PAGE_SCHEMA]
-                    + ([PAGE_USERS] if user["is_admin"] and logins_on else []))
+nav = st.navigation({"Records": [PAGE_FIND, PAGE_TAGS, PAGE_NEW, PAGE_IMPORTS],
+                     "Setup": [PAGE_BUSINESSES, PAGE_SERVICES, PAGE_TEMPLATES, PAGE_SCHEMA]
+                     + ([PAGE_USERS] if user["is_admin"] and logins_on else [])})
 
 # Sidebar, drawn on every page under the navigation menu.
 with st.sidebar:
@@ -1964,6 +2188,9 @@ with st.sidebar:
     running = store.active_imports()
     if running:
         st.caption(f"🔵 {len(running)} import{'s' if len(running) != 1 else ''} in progress")
+    st.caption(f"{records.totals()['records']:,} records")
+    for w in db_warnings:
+        st.caption("⚠️ " + w)
     st.divider()
     # With AUTH_MODE=none there are no accounts (everyone is the local admin): no name, password or sign-out.
     if logins_on:
@@ -1983,7 +2210,7 @@ with st.sidebar:
                 logout()
                 st.rerun()
     st.caption("Claude: " + (f"connected ({settings.mapping_model})" if assistant else "not configured"))
-    st.caption(f"Target: {schema.label} · v{__version__}")
+    st.caption(f"Customer Records v{__version__} · conversion engine: file-converter {ENGINE_VERSION}")
 
 # Light/dark toggle, fixed at the top right of every page (drawn before the page so it's there while it loads).
 theme_toggle()
