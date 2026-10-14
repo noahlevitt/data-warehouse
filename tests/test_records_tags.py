@@ -87,12 +87,13 @@ def test_records_without_a_number_are_left_out_and_counted(rstore, jobs, records
 
 
 def test_creation_date_is_the_last_visit_only_for_files_without_one(rstore, jobs, records_schema, real_schema):
-    """As the converter: per import, not per number (a blank Last Visit cell stays blank)."""
+    """As the converter: per import, not per number (a blank Last Visit cell stays blank). The last visit is a date
+    only (1.2.0), so the creation date stands in by its day."""
     import_file(rstore, jobs, records_schema, "created.csv", "Phone,Created At\n5165550100,2024-01-05 14:30\n")
     import_file(rstore, jobs, records_schema, "visits.csv",
                 "Phone,Created At,Last Visit\n5165550101,2024-01-05,\n5165550102,2024-01-05,10/01/2026\n")
     by = rows(export_table(rstore.db, tag_all(rstore), records_schema, real_schema)[0], real_schema)
-    assert by["5165550100"]["transactions_last"] == "01/05/2024 02:30 PM"
+    assert by["5165550100"]["transactions_last"] == "01/05/2024 12:00 AM"
     assert by["5165550101"]["transactions_last"] == ""
     assert by["5165550102"]["transactions_last"] == "10/01/2026 12:00 AM"
 
