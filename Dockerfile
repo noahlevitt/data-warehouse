@@ -37,13 +37,14 @@ COPY . .
 RUN useradd --create-home --uid 1000 appuser && mkdir -p /app/data && chown -R appuser /app/data
 USER appuser
 
-# Streamlit's port. Publish it only to a reverse proxy with HTTPS (README → "HTTPS / access"), not the internet.
-EXPOSE 8501
+# Streamlit's port (8502; the file converter uses 8501). Publish it only to a reverse proxy with HTTPS
+# (README → "On a server"), not the internet.
+EXPOSE 8502
 # Docker marks the container unhealthy if Streamlit stops answering its health endpoint (shown in `docker ps`).
 # `restart: unless-stopped` in docker-compose.yml restarts the container when it exits; a container that is
 # unhealthy but still running is NOT restarted automatically.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')" || exit 1
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8502/_stcore/health')" || exit 1
 
 # 0.0.0.0 so the app is reachable from outside the container (through the published port).
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+CMD ["streamlit", "run", "app.py", "--server.port=8502", "--server.address=0.0.0.0"]
