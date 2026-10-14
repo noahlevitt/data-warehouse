@@ -20,6 +20,10 @@ from streamlit.testing.v1 import AppTest
 from converter.mapping import FieldMapping
 from converter.storage import Store
 
+from records.db import close_all
+
+from .conftest import drop_database, fresh_database
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CSV = (b"Phone,SMS Opt In,Last Campaign Sent,Last Visit\n5165550100,Y,09/01/2026,10/01/2026\n"
        b"9175551234,N,09/02/2026,10/02/2026\n")
@@ -63,15 +67,18 @@ def test_abandoned_drafts_are_deleted(tmp_path):
 
 # ---------------------------------------------------------------- app
 @pytest.fixture(scope="module")
-def app_store(tmp_path_factory):
-    """The data folder the app uses in these tests (logins off, no Claude)."""
+def app_store(tmp_path_factory, pg_server):
+    """The data folder the app uses in these tests (logins off, no Claude), and an empty records database."""
     data = tmp_path_factory.mktemp("appdata")
-    old = {k: os.environ.get(k) for k in ("DATA_DIR", "AUTH_MODE", "ANTHROPIC_API_KEY")}
-    os.environ.update(DATA_DIR=str(data), ANTHROPIC_API_KEY="")
+    url = fresh_database(pg_server)
+    old = {k: os.environ.get(k) for k in ("DATA_DIR", "AUTH_MODE", "ANTHROPIC_API_KEY", "DATABASE_URL")}
+    os.environ.update(DATA_DIR=str(data), ANTHROPIC_API_KEY="", DATABASE_URL=url)
     os.environ.pop("AUTH_MODE", None)
     st.cache_resource.clear()
     yield Store(data / "converter.db")
+    close_all()
     st.cache_resource.clear()
+    drop_database(pg_server, url)
     for k, v in old.items():
         if v is None:
             os.environ.pop(k, None)
@@ -105,7 +112,7 @@ def test_refresh_restores_the_mapping_in_progress(app_store, real_schema):
     assert "Picked up where you left off" in at.info[0].value
     m = at.session_state["mapping"]
     assert m.get("consent").sources == ["SMS Opt In"] and m.get("consent").origin == "user"
-    assert at.selectbox[0].value == "Central"
+    assert [b.value for b in at.selectbox if b.label == "Client time zone"] == ["Central"]
     assert at.checkbox(key="remember_mapping").value is False
     assert [t.value for t in at.text_input if t.label == "Template name"] == ["Client X"]
     assert at.query_params["draft"] == did
@@ -147,4 +154,4 @@ def test_saved_state_is_plain_json(app_store):
     run_app(did)
     raw = (app_store.drafts_root / did / "state.json").read_text()
     assert set(json.loads(raw)) == {"read_args", "mapping", "map_meta", "template_name", "timezone", "ai_used",
-                                    "remember"}
+                                    "remember", "business", "service"}
