@@ -44,17 +44,20 @@ On **Find**, fill in only what you're looking for: **nothing is required**, and 
 shows every record. Each **request** has:
 
 - **Business** and **Services**: pick one or more of each (type to search the list). Empty = any.
-- a box for **Record ID**, **Record created** and every record field (Phone, First name, Last name, Email, address,
-  visits, spend, the activity dates, Birthday, Anniversary, Consent). Leave a box empty to ignore it.
-- **More criteria**: a small table for the rest — Any field, Full name, Tag, Import #, File name, File row, Phone
-  problem and each column of the files.
+- **Last visit / order**: a date or a range of dates, e.g. `1/1/2026...1/20/2026` (it is a date only — no times).
+- **Phone**, **First name** and **Last name**.
+- **＋ Add a field**: a menu of every other field — Full name, Email, Address, City, State, ZIP, Total visits, Total
+  spent, Record created (the day the record was imported), Birthday, Anniversary, the other dates, Any field,
+  Consent, Phone problem, Tag, Import #, File name, Record ID, File row, and the files' own columns. A click adds
+  its box to the request; the box's ✕ takes it off. What you typed elsewhere stays.
+
+Leave a box empty to ignore it.
 
 Then:
 
 - A record must match **everything filled in** in one request.
 - **+ Request** adds another request: records matching **either** request are found.
-- **+ Omit request** adds a request that **removes** what it matches from the requests above it. (Requests after the
-  first keep their field boxes folded under **Fields** until something is typed in them.)
+- **+ Omit request** adds a request that **removes** what it matches from the requests above it.
 - **Find** (or Enter in any box) makes a new found set. **Constrain** keeps only found records that also match the
   requests on screen; **Extend** adds the records they match (with nothing filled in, both leave the found set as
   it is). **Show all** finds every record. **Clear** empties the requests.
@@ -64,6 +67,12 @@ Then:
   the same.
 - In **Business** and **Services**, type an ID or part of a name and press Enter to pick the first match; click to
   pick more.
+- **Names**: a file with one *Name* (or *Full Name*, *Customer Name*…) column is split into first and last name when
+  it is imported. A file whose *First Name* column holds the whole name keeps it there, with no Last name ("Lisa
+  Marie Ray"). First name and Last name also read such a name as split at its first space (Lisa / Marie Ray), or at
+  its comma ("Ray, Lisa": Ray is the last name), so First name `lisa` and Last name `ray` both find it. `=` (empty)
+  and `*` (any value) look at the stored names only. **Full name** (Add a field) searches first and last together:
+  `lisa ray`.
 
 Examples:
 
@@ -74,16 +83,17 @@ Examples:
 | A business without one of its services | Business: pick it; **+ Omit request**; Services: pick the service there |
 | A phone number, any business | Phone `516-555-0100` (nothing else) |
 | A business's records with a certain phone number | one request: Business picked, Phone `516-555-0100` |
-| Smiths who live in Queens | one request: Last name `smith`, City `queens` |
-| Guests of Bayside or Flushing | two requests: City `bayside` / City `flushing` |
+| Smiths who live in Queens | one request: Last name `smith`, City `queens` (Add a field → City) |
+| Guests of Bayside or Flushing | two requests, each with City added: `bayside` / `flushing` |
+| Who visited between two days | Last visit / order `1/1/2026...1/20/2026` |
 | Who visited in 2025 | Last visit / order `1/1/2025...12/31/2025` (or `2025`) |
 | Who hasn't visited since June | Last visit / order `...6/30/2026` (up to and including June 30) |
 | Who visited since September | Last visit / order `9/1/2026...` (September 1 on) |
-| Records stored today / one record | Record created `//` / Record ID `1200` |
-| October birthdays, any year | Birthday `10/*` (one day: `10/15`; a span: `10/1...10/15`) |
+| Records imported today / this month | Add a field → Record created: `//` / `10/2026` |
+| October birthdays, any year | Add a field → Birthday: `10/*` (one day: `10/15`; a span: `10/1...10/15`) |
 | Records with no usable phone number | Phone `=` |
-| Records already in a tag | More criteria: Tag `promo` (in any tag: `*`; in no tag: `=`) |
-| A value of a column that feeds no field | More criteria: Column: Points `>=100` (compares text) or Column: Notes `vip` |
+| Records already in a tag | Add a field → Tag: `promo` (in any tag: `*`; in no tag: `=`) |
+| A value of a column that feeds no field | Add a field → Columns of the files → Points: `>=100` (compares text), or Notes: `vip` |
 
 How to type criteria is listed under **How to search** on the page and in the [README](../README.md#finding-records).
 
