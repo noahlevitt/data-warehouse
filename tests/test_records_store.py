@@ -8,7 +8,7 @@ from converter.storage import Store
 from records import find as F
 from records.db import Database, check_fields
 from records.fields import find_fields
-from records.store import StoreError
+from records.store import RecordStore, StoreError
 
 from .conftest import ROOT, drop_database, fresh_database
 from .records_util import import_file
@@ -129,6 +129,32 @@ def test_setup_is_repeatable_and_adds_new_fields(pg_server, records_schema):
         data["fields"][-1]["type"] = "string"
         warnings = db.setup(TargetSchema.model_validate(data))
         assert len(warnings) == 1 and "loyalty_points" in warnings[0]
+    finally:
+        db.close()
+        drop_database(pg_server, url)
+
+
+def test_a_database_from_before_1_2_0_gets_a_date_only_last_visit(pg_server, records_schema):
+    """1.0.x/1.1.0 stored the last visit with a time; setup converts the column to a date, keeping each day."""
+    url = fresh_database(pg_server)
+    db = Database(url, max_size=2)
+    try:
+        data = yaml.safe_load((ROOT / "schemas" / "records_schema.yaml").read_text())
+        old = next(f for f in data["fields"] if f["name"] == "transactions_last")
+        old.update(type="datetime", format="%m/%d/%Y %I:%M %p")
+        db.setup(TargetSchema.model_validate(data))
+        rs = RecordStore(db)
+        rs.add_business("1001", "A")
+        sid = rs.add_service("S")
+        imp = rs.create_import("1001", sid, "f.csv", "x", None, "t")
+        db.execute("INSERT INTO records (import_id, business_id, service_id, file_row, transactions_last) "
+                   "VALUES (%s, '1001', %s, 2, '2026-10-09 23:30')", (imp, sid))
+        assert db.setup(records_schema) == []
+        col = db.fetch_one("SELECT data_type FROM information_schema.columns "
+                           "WHERE table_name = 'records' AND column_name = 'transactions_last'")
+        assert col["data_type"] == "date"
+        assert db.fetch_one("SELECT transactions_last FROM records")["transactions_last"].isoformat() == "2026-10-09"
+        assert db.setup(records_schema) == []   # and again on the next start: nothing to do
     finally:
         db.close()
         drop_database(pg_server, url)
