@@ -40,36 +40,55 @@ Good to know:
 
 ## 3 · Find records
 
-On **Find**, each **request** is a small table: pick a **Field** and type a **Criterion** in as many rows as you
-need. A new request starts with Phone, First name, Last name and Any field; change any row's field, and leave a
-criterion empty to ignore its row.
+On **Find**, fill in only what you're looking for: **nothing is required**, and a **Find** with everything blank
+shows every record. Each **request** has:
 
-- A record must match **every** criterion of one request.
+- **Business** and **Services**: pick one or more of each (type to search the list). Empty = any.
+- a box for **Record ID**, **Record created** and every record field (Phone, First name, Last name, Email, address,
+  visits, spend, the activity dates, Birthday, Anniversary, Consent). Leave a box empty to ignore it.
+- **More criteria**: a small table for the rest — Any field, Full name, Tag, Import #, File name, File row, Phone
+  problem and each column of the files.
+
+Then:
+
+- A record must match **everything filled in** in one request.
 - **+ Request** adds another request: records matching **either** request are found.
-- **+ Omit request** adds a request that **removes** what it matches from the requests above it.
-- **Find** makes a new found set. **Constrain** keeps only found records that also match the requests on screen;
-  **Extend** adds the records they match. **Show all** finds every record. **Clear** empties the requests.
-- **Limit to businesses / services** at the top applies to everything, always.
+- **+ Omit request** adds a request that **removes** what it matches from the requests above it. (Requests after the
+  first keep their field boxes folded under **Fields** until something is typed in them.)
+- **Find** (or Enter in any box) makes a new found set. **Constrain** keeps only found records that also match the
+  requests on screen; **Extend** adds the records they match (with nothing filled in, both leave the found set as
+  it is). **Show all** finds every record. **Clear** empties the requests.
+- A criterion that can't be read (a typo, a date that doesn't exist) is explained in red, and the found set stays
+  as it was: correct it and click again.
+- Ranges use three dots: `...`. Typing `…` (a phone or a Mac may turn three dots into one character) or `..` works
+  the same.
+- In **Business** and **Services**, type an ID or part of a name and press Enter to pick the first match; click to
+  pick more.
 
 Examples:
 
 | To find | Do |
 |---|---|
-| A business's records with a certain phone number | one request: Business `1001`, Phone `516-555-0100` |
-| A service within a business | Limit to that business and service, click **Show all** |
+| A business | Business: pick it, **Find** |
+| A business and one or more of its services | Business and Services: pick them in one request |
+| A business without one of its services | Business: pick it; **+ Omit request**; Services: pick the service there |
+| A phone number, any business | Phone `516-555-0100` (nothing else) |
+| A business's records with a certain phone number | one request: Business picked, Phone `516-555-0100` |
 | Smiths who live in Queens | one request: Last name `smith`, City `queens` |
 | Guests of Bayside or Flushing | two requests: City `bayside` / City `flushing` |
-| Everyone of a business except one service | request Business `1001`, then an Omit request: Service `square` |
-| Who visited in September 2026 | Last visit / order `9/2026` (or `9/1/2026...9/30/2026`) |
-| Who hasn't visited since July | Last visit / order `<7/1/2026` |
+| Who visited in 2025 | Last visit / order `1/1/2025...12/31/2025` (or `2025`) |
+| Who hasn't visited since June | Last visit / order `...6/30/2026` (up to and including June 30) |
+| Who visited since September | Last visit / order `9/1/2026...` (September 1 on) |
+| Records stored today / one record | Record created `//` / Record ID `1200` |
 | October birthdays, any year | Birthday `10/*` (one day: `10/15`; a span: `10/1...10/15`) |
 | Records with no usable phone number | Phone `=` |
-| Records already in a tag | Tag `promo` (in any tag: `*`; in no tag: `=`) |
-| A value of a column that feeds no field | Column: Points `>=100` (compares text) or Column: Notes `vip` |
+| Records already in a tag | More criteria: Tag `promo` (in any tag: `*`; in no tag: `=`) |
+| A value of a column that feeds no field | More criteria: Column: Points `>=100` (compares text) or Column: Notes `vip` |
 
 How to type criteria is listed under **How to search** on the page and in the [README](../README.md#finding-records).
 
-The **found set** shows how many records, how many unique phone numbers and how many without a usable number. Pick
+The **found set** shows how many records, how many unique phone numbers and how many without a usable number, and
+for each record its **Record ID** and when it was **created**. Pick
 the columns to show, the sort and the page. Select rows to:
 
 - see **one record** (select one row): every field, its phone numbers (with the number as written and whether it
@@ -88,7 +107,7 @@ Under the found set, **Tag the found set**:
 - type a name, choose the business and **Create tag with found set**.
 
 A tag belongs to **one business**: only that business's records go in, and the page says how many of other
-businesses were left out. Use *Limit to* to keep a found set to one business.
+businesses were left out. **Constrain** with one Business to keep a found set to one business.
 
 ## 5 · Export a tag
 
