@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Run Customer Records on this computer without Docker (macOS / Linux). Needs Python 3.11+ and PostgreSQL.
 #
-# Usage:  ./run_local.sh            then open http://localhost:8501   (stop with Ctrl+C)
+# Usage:  ./run_local.sh            then open http://localhost:8502   (stop with Ctrl+C)
 #         PORT=8600 ./run_local.sh  to use another port
+# Port 8502, not Streamlit's usual 8501, so the file converter can keep running on 8501 on the same computer.
 # PostgreSQL on a Mac, once:  brew install postgresql@17 && brew services start postgresql@17
 #   The app then creates its database (customer_records) by itself; DATABASE_URL in .env points elsewhere.
 # First run: creates a virtual environment in .venv/ and installs requirements.txt into it (a minute or two),
@@ -28,4 +29,4 @@ fi
 # Settings file: created from the template on first run (edit it for DATABASE_URL, the Claude key, …).
 [ -f .env ] || cp .env.example .env
 # Replace this shell with the web app so Ctrl+C stops it cleanly.
-exec .venv/bin/streamlit run app.py --server.port "${PORT:-8501}"
+exec .venv/bin/streamlit run app.py --server.port "${PORT:-8502}"
