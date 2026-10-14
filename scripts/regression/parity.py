@@ -12,7 +12,9 @@ regression.py) it compares two paths, both mapped automatically by the rules (no
 Expected differences, left out of the comparison:
 * consent: a tag export leaves it blank (business decision), so the converter's consent is blanked too;
 * a number on several rows of the file: the converter keeps a row per different combination of dates, the tag
-  export merges them into one row (latest dates); only such numbers' rows can differ, and they are counted apart.
+  export merges them into one row (latest dates); only such numbers' rows can differ, and they are counted apart;
+* a field records keep as a date only though the import format has a time (the last visit, since 1.2.0): only its
+  day is compared (the export writes 12:00 AM).
 
 Everything else must be identical: the same set of numbers, and for every number on one row the same value in every
 column. Prints one line per file that differs and a summary; exit code 1 when any file differs.
@@ -30,6 +32,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import sys
+from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -47,7 +50,7 @@ from converter.schema import load_schema  # noqa: E402
 from converter.services import initial_mapping  # noqa: E402
 from records import find as F  # noqa: E402
 from records.config import get_records_settings  # noqa: E402
-from records.db import Database  # noqa: E402
+from records.db import Database, date_only  # noqa: E402
 from records.importer import RecordSink  # noqa: E402
 from records.store import RecordStore  # noqa: E402
 from records.tags import export_table  # noqa: E402
@@ -85,6 +88,19 @@ def compare_file(name: str, data: bytes, target, records_schema, rs: RecordStore
     rs.add_to_tag(tag, cond, params)
     exp, _ = export_table(rs.db, tag, records_schema, target)
 
+    # Columns compared by the day only: date-only record fields exported into a date-and-time column.
+    kept_as_day = {f.name for f in records_schema.fields if date_only(f)}
+    day_only = {f.header: f.format for f in target.fields
+                if f.type == "datetime" and f.name in kept_as_day and f.format}
+
+    def same(col: str, a, b) -> bool:
+        if col in day_only and a and b:
+            try:
+                return datetime.strptime(a, day_only[col]).date() == datetime.strptime(b, day_only[col]).date()
+            except ValueError:
+                return False
+        return a == b
+
     diffs = []
     counts = conv[phone].value_counts()
     multi = set(counts[counts > 1].index)
@@ -96,7 +112,7 @@ def compare_file(name: str, data: bytes, target, records_schema, rs: RecordStore
         if r[phone] in multi or r[phone] not in e_by:
             continue
         for col, v in r.items():
-            if e_by[r[phone]][col] != v:
+            if not same(col, v, e_by[r[phone]][col]):
                 diffs.append(f"{r[phone]} {col}: converter {v!r}, tag {e_by[r[phone]][col]!r}")
     return {"numbers": len(counts), "multi": len(multi), "diffs": diffs}
 
