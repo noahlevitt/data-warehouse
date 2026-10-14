@@ -98,17 +98,22 @@ To add a field, add it to the YAML file and restart the app: its database column
 
 ## Finding records
 
-A find is one or more **requests**. In one request a record must match **every** criterion (AND); several requests
-**add up** (OR); an **Omit** request removes what it matches from what the requests above it found (FileMaker's
-rules: requests are applied top to bottom; an Omit as the first request starts from all records). Then:
+A find is one or more **requests**. **Nothing is required**: fill in only what you're looking for, and a Find with
+everything blank shows every record. Each request has a **Business** picker and a **Services** picker (one or more
+of each; empty = any), a box for **Record ID**, **Record created** and every record field, and *More criteria* for
+the rest. In one request a record must match **everything filled in** (AND); several requests **add up** (OR); an
+**Omit** request removes what it matches from what the requests above it found (FileMaker's rules: requests are
+applied top to bottom; an Omit as the first request starts from all records; a blank request is ignored). Enter in
+any box is **Find**. Then:
 
 - **Constrain** — keep only found records that also match new requests; **Extend** — add what new requests match.
 - **Omit selected** — take selected records out; **Show omitted only** — every record not in the found set.
-- **Show all** — every record. **Limit to businesses / services** applies on top of everything, always.
+- **Show all** — every record (the same as a blank Find).
 
-Fields: every record field, plus *Any field* (every value, cleaned and as written), *Full name*, *Business* (ID or
-name), *Service*, *Tag*, *Phone problem*, *Import #*, *File name*, *Imported on*, *Record #*, *File row* and
-*Column: …* for each column of the imported files.
+Every record has its own **Record ID** and its **Record created** date and time (when its import stored it), shown
+in the found set and searchable like any number and date. *More criteria*: *Any field* (every value, cleaned and as
+written), *Full name*, *Tag*, *Phone problem*, *Import #*, *File name*, *File row* and *Column: …* for each column of
+the imported files.
 
 | Type | Criterion | Finds |
 |---|---|---|
@@ -118,31 +123,38 @@ name), *Service*, *Tag*, *Phone problem*, *Import #*, *File name*, *Imported on*
 | | `"main st"` | this text anywhere, also inside words and with its punctuation (`"c++"`) |
 | | `sm*th` | `*` = any characters (`@` and `#` are ordinary characters, so emails and "Apt #4" can be typed as they are) |
 | | `=` / `*` | empty / any value |
-| | `a...m`, `<m`, `>=m` | alphabetical ranges (the earlier value first) and comparisons |
-| Business | `1001` / `krave` / `1000...1999` | the business with that ID (when there is one; otherwise names starting with it) / by name / a range of IDs |
+| | `a...m`, `...m`, `a...`, `<m`, `>=m` | A through M (Miller included: the upper end takes in everything starting with it), up to M, from A on; comparisons |
 | Phone | `(516) 555-0100`, `+1 516.555.0100` | that number, however it is typed; any of the record's numbers |
 | | `5550100` / `516*`, `+1 516*` | numbers containing these digits / starting with 516 |
 | | `=` / `*` | no usable number / has a number |
 | Number | `5`, `>5`, `<=100`, `10...20`, `$1,200`, `#12` | values, comparisons, ranges (inclusive, the smaller first) |
+| | `...20` / `10...` | up to and including 20 / 10 or more |
 | Date | `10/9/2026`, `10/2026`, `2026`, `Oct 9 2026`, `//` | that day (the whole day), month, year, today (in the app's time zone) |
 | | `10/9/2026 3:45 PM`, `>10/9/2026 9:00 AM` | that minute, after it (date-and-time fields) |
-| | `1/1/2026...3/31/2026`, `<10/1/2026`, `>=10/1/2026` | ranges (inclusive, the earlier first), before, on or after |
+| | `1/1/2025...1/1/2026`, `<10/1/2026`, `>=10/1/2026` | ranges (inclusive, the earlier first), before, on or after |
+| | `...1/1/2026` / `1/1/2025...` | up to and including 1/1/2026 / from 1/1/2025 on (also `...2025`, `10/2026...`) |
 | | `10/9`, `Oct 9`, `10/*`, `October`, `12/15...1/15` | month and day in **any year** (birthdays), a month, a span over the new year |
 | True/false | `yes` / `no` / `=` / `*` | consent true, false, empty, any |
 
 Punctuation at the start or end of a word is ignored, as in FileMaker (`c++` searches for words starting with
-"c"): put text in quotes to search for it exactly. A curly apostrophe (’) and a straight one (') are the same. A
-range written backwards says so instead of finding nothing.
+"c"): put text in quotes to search for it exactly. A curly apostrophe (’) and a straight one (') are the same. The
+range operator is `...`; `…` (one character, as phones and Macs type it) and `..` are read the same, and four or more
+dots are refused. A range written backwards, a year after 9998 or a number too large for the database says so
+instead of finding nothing. A criterion that can't be read leaves the found set as it was. **Constrain** and
+**Extend** with nothing filled in change nothing and say so (only a blank **Find** means every record). Phone
+numbers have no ranges (`516*` finds numbers starting with 516).
 
 Not supported yet: `!` (duplicates), `?` (invalid dates), `~` (relaxed search): they say so. Birthdays without a
-year are stored with year 1600: month/day criteria (`9/12`, `10/*`) and `1600` find them; a year, a range or
-before/after with a year never does (`<1/1/1950` isn't "year unknown").
+year are stored with year 1600: month/day criteria (`9/12`, `10/*`) and the year 1600 itself (`1600`,
+`9/12/1600`) find them; another year, a range or before/after with a year never does (`<1/1/1950` isn't "year
+unknown").
 
-Typical finds: **a business with a phone number** — Business `1001` and Phone `516-555-0100` in one request. **A
-service within a business** — Limit to the business and the service, then *Show all*. **Lapsed guests of a
-business** — Business `1001` and Last visit / order `<7/1/2026`. **Everyone in Bayside or Flushing** — two requests,
-City `bayside` and City `flushing`. **A business's records except one service** — Business `1001`, then an Omit
-request with Service `square`. **October birthdays** — Birthday `10/*`.
+Typical finds: **a business** — pick it under Business, Find. **A business and one or more of its services** — pick
+the business and the services in one request. **A business without one service** — pick the business, click
+*+ Omit request* and pick the service there. **A phone number anywhere** — Phone `516-555-0100` alone. **Lapsed
+guests of a business** — the business and Last visit / order `...6/30/2026`. **Signed up in 2025** — First visit /
+sign-up `1/1/2025...12/31/2025`. **Everyone in Bayside or Flushing** — two requests, City `bayside` and City
+`flushing`. **October birthdays** — Birthday `10/*`.
 
 ## Tags and exports
 
