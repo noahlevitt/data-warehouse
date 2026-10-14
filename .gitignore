@@ -1,0 +1,8 @@
+# Never commit: real settings/secrets (.env), the database and import files (data/),
+# Python caches, test caches and the local virtual environment.
+.env
+data/
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
