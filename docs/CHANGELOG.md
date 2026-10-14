@@ -4,6 +4,13 @@ What changed in each version of Customer Records. The running version is shown i
 is tagged in git (`vX.Y.Z`). The history of the file converter this project is based on is in
 [converter/CHANGELOG.md](converter/CHANGELOG.md).
 
+## 1.0.2
+
+- **The mapping tables on New import no longer jump back to the top.** Ticking *Skip*, changing *Goes to* or
+  changing a field's source column(s) redrew the table scrolled back to its first row, so after each click you had
+  to scroll down again. Both tables (*Review column mapping* and *Columns in your file*) now show every row and the
+  page scrolls instead, so the row you changed stays where it was.
+
 ## 1.0.1
 
 - **Opens at http://localhost:8502** instead of 8501, so it runs next to the file converter, which keeps 8501 on
