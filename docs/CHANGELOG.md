@@ -4,6 +4,23 @@ What changed in each version of Customer Records. The running version is shown i
 is tagged in git (`vX.Y.Z`). The history of the file converter this project is based on is in
 [converter/CHANGELOG.md](converter/CHANGELOG.md).
 
+## 1.2.0 — the Find page laid out by what you search most
+
+- **Each request shows Business, Services and Last visit / order**, then **Phone, First name and Last name**. Every
+  other field is one click away: **＋ Add a field** opens a menu (name, contact & address; visits & spend; dates,
+  with Record created — the import date — first; other; the files' own columns); a click adds its box to the
+  request, and the box's ✕ takes it off. What you typed elsewhere stays. This replaces the long list of boxes and
+  the More criteria table.
+- **Last visit / order is a date only**: search it by days, e.g. `1/1/2026...1/20/2026`, and it shows as
+  `01/10/2026`. A time in the file is dropped (after converting a written time zone to the client's, so the day is
+  the client's). The import is mapped and reviewed exactly as before (the same columns are picked; future dates, old
+  dates and converted time zones are still flagged). Records already stored keep their day: the database column is
+  converted on the first start. Tag exports write the last visit at 12:00 AM.
+- **Whole names in First name**: a file whose *First Name* column holds the whole name ("Lisa Marie Ray", no last
+  name) is found by First name `lisa` and Last name `ray` as well as by the name as stored: First and Last name also
+  read such a name as split at its first space, or at its comma ("Ray, Lisa"). **Full name** (in Add a field)
+  searches first and last together.
+
 ## 1.1.0 — finds without anything required
 
 - **Nothing is required in a find.** Fill in only what you're looking for; a **Find** with everything blank shows
