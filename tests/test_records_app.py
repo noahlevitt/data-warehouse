@@ -124,7 +124,7 @@ def test_new_import_needs_a_business_and_service_and_stores_records(env):
     assert not button(at, "Start import").disabled
     button(at, "Start import").click().run()
     job = jobs.list_imports(limit=1)[0]
-    for _ in range(100):
+    for _ in range(600):  # each import runs in a worker process (records.runner), which takes a moment to start
         if not jobs.get_import(job.id).active:
             break
         time.sleep(0.1)
@@ -324,3 +324,58 @@ def test_fields_page_lists_both_formats(env):
     at = run_page("Fields")
     assert at.header[0].value == "Fields"
     assert len(at.dataframe) == 2
+
+
+def test_logins_on_the_server(env, monkeypatch):
+    """AUTH_MODE=password (the Docker setup): nothing shows before signing in, each person signs in with their own
+    account, what they add is recorded under their name, and only admins get the Users page."""
+    jobs, rs = env
+    monkeypatch.setenv("AUTH_MODE", "password")
+    monkeypatch.delenv("ADMIN_USERNAME", raising=False)
+    monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
+    names = {u["username"] for u in jobs.list_users()}
+    for name, admin in (("noah", True), ("staff1", False)):
+        if name not in names:
+            jobs.add_user(name, "long-enough-pw", is_admin=admin)
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60).run()
+    assert [t.label for t in at.text_input] == ["Username", "Password"]
+    assert not at.sidebar.caption and not at.header  # no page, no record count before signing in
+    at.text_input[0].input("staff1")
+    at.text_input[1].input("wrong-password")
+    at.button(key="FormSubmitter:login-Sign in").click().run()
+    assert at.error[0].value == "Wrong username or password." and not at.sidebar.caption
+    at.text_input[1].input("long-enough-pw")
+    at.button(key="FormSubmitter:login-Sign in").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert any(c.value == "Signed in as **staff1**" for c in at.sidebar.caption)
+    staff = {"username": "staff1", "is_admin": False}
+    at = run_page("Businesses", state={"user": staff})
+    by_label(at.text_input, "ID (as in the main system)").input("3003")
+    by_label(at.text_input, "Name").input("Login Test Cafe")
+    at.button(key="FormSubmitter:add_business-Add business").click().run()
+    assert rs.business("3003")["created_by"] == "staff1"
+    [table] = [d.value for d in at.dataframe if "Added by" in d.value.columns]
+    assert table.set_index("ID").loc["3003", "Added by"] == "staff1"
+    with pytest.raises(AssertionError):  # not in the navigation (run_page finds no such page): staff can't open it
+        run_page("Users", state={"user": staff})
+    at = run_page("Users", state={"user": {"username": "noah", "is_admin": True}})
+    assert at.header[0].value == "Users"
+
+
+def test_a_deleted_account_is_signed_out_and_admin_rights_apply_at_once(env, monkeypatch):
+    """With logins on, a tab already signed in follows what an admin changed on the Users page."""
+    jobs, _ = env
+    monkeypatch.setenv("AUTH_MODE", "password")
+    monkeypatch.delenv("ADMIN_USERNAME", raising=False)
+    monkeypatch.delenv("ADMIN_PASSWORD", raising=False)
+    jobs.add_user("temp1", "long-enough-pw", is_admin=True)
+    if "noah" not in {u["username"] for u in jobs.list_users()}:
+        jobs.add_user("noah", "long-enough-pw", is_admin=True)
+    jobs.set_admin("temp1", False)
+    with pytest.raises(AssertionError):  # signed in as an admin earlier, but no longer one: no Users page
+        run_page("Users", state={"user": {"username": "temp1", "is_admin": True}})
+    jobs.delete_user("temp1")
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60)
+    at.session_state["user"] = {"username": "temp1", "is_admin": False}
+    at.run()
+    assert [t.label for t in at.text_input] == ["Username", "Password"] and not at.sidebar.caption
