@@ -107,8 +107,10 @@ Examples:
 How to type criteria is listed under **How to search** on the page and in the [README](../README.md#finding-records).
 
 The **found set** shows how many records, how many unique phone numbers and how many without a usable number, and
-for each record its **Record ID**, when it was **created** and its **Date** with the day of the week ("10/09/2026
-Fri"). Pick the columns to show, the sort (e.g. **Date (newest first)**) and the page. Select rows to:
+for each record its **Record ID**, when it was **created** and its **Date**. Dates on the screen show their day of
+the week: **Fri, 10/9/2026** (with the time when there is one: **Fri, 10/9/2026 3:45 PM**; birthdays and
+anniversaries without the day). Click a date column's heading to sort the page by it. Pick the columns to show, the
+sort (e.g. **Date (newest first)**) and the page. Select rows to:
 
 - see **one record** (select one row): every field, its phone numbers (with the number as written and whether it
   was repaired — check those), values that couldn't be read, its tags, the row exactly as in the file, and a button
@@ -116,7 +118,9 @@ Fri"). Pick the columns to show, the sort (e.g. **Date (newest first)**) and the
 - **Omit selected** from the found set.
 
 **Show omitted only** swaps the found set for every other record. **Prepare CSV of the found set** gives every
-field of every found record, for Excel, with the Date and its day of the week in columns of their own.
+field of every found record, for Excel, with dates as `10/09/2026` (which Excel reads as dates) and the Date's day
+of the week in a column of its own. Tag exports write dates in the main system's import format
+(`10/09/2026 12:00 AM`), never with the day of the week.
 
 ## 4 · Put records into a tag
 
