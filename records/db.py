@@ -20,7 +20,8 @@ Tables
                     be read), ``source`` (the row exactly as in the file, every column) and ``search_text``
 ``record_phones``   every usable number of a record (10 digits, phone columns' order), ``repaired``, ``original``
 ``tags``            a named list for one business; ``tag_records`` its records; ``tag_events`` what was done to it
-``app_meta``        small key/value facts (e.g. whether pg_trgm is available)
+``app_meta``        small key/value facts (e.g. whether pg_trgm is available, which name table is loaded)
+``first_names``     US first names with how many girls and boys got them, for gender guesses (records.gender)
 ==================  ===============================================================================================
 
 Deleting an import deletes its records, which removes them from tags (``ON DELETE CASCADE``); the store logs that
@@ -49,6 +50,8 @@ from psycopg_pool import ConnectionPool
 
 from converter.schema import FieldSpec, TargetSchema
 
+from . import gender
+
 log = logging.getLogger(__name__)
 
 # Column type of each record field type (phone fields have no column; see record_phones).
@@ -64,6 +67,7 @@ TRIGRAM_TYPES = {"string", "email"}
 
 _TABLES = """
 CREATE TABLE IF NOT EXISTS app_meta (key text PRIMARY KEY, value text NOT NULL);
+CREATE TABLE IF NOT EXISTS first_names (name text PRIMARY KEY, female integer NOT NULL, male integer NOT NULL);
 CREATE TABLE IF NOT EXISTS businesses (
     id text PRIMARY KEY CHECK (btrim(id) <> ''),
     name text NOT NULL CHECK (btrim(name) <> ''),
@@ -390,6 +394,22 @@ class Database:
                           "(phone gin_trgm_ops)")
             c.execute("INSERT INTO app_meta (key, value) VALUES ('trigram', %s) ON CONFLICT (key) DO UPDATE "
                       "SET value = excluded.value", ("yes" if self.trigram else "no",))
+            if gender.available(schema) and gender.FIELD not in mismatched:
+                # A database from before 1.4.0 (the column was just added): first what its files said, from each
+                # record's row as written; then guesses for the rest (below).
+                if gender.FIELD not in existing:
+                    said = gender.read_stored_files(c, schema)
+                    log.info("Gender: %s stored records got what their files said", said)
+                # The name table the gender guesses use: (re)loaded when the shipped one changed (or the database is
+                # new or from before 1.4.0), and then every record's guess made again (F and M are never touched).
+                version = gender.names_version()
+                loaded = c.execute("SELECT value FROM app_meta WHERE key = 'first_names'").fetchone()
+                if loaded is None or loaded["value"] != version or gender.FIELD not in existing:
+                    names = gender.load_names(c)
+                    changed = gender.guess(c)
+                    c.execute("INSERT INTO app_meta (key, value) VALUES ('first_names', %s) ON CONFLICT (key) DO "
+                              "UPDATE SET value = excluded.value", (version,))
+                    log.info("Loaded %s first names; %s records got a new gender guess", names, changed)
             self.collation, note = _case_collation(c)
             if note:
                 warnings.append(note)
