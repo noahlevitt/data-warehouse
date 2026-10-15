@@ -3,10 +3,10 @@
 For whoever picks Customer Records up next: a person, or Claude in a new chat. It records what the code and the
 other documents don't: how changes are made and delivered, the decisions the business made, and what is still open.
 
-**State:** version 1.3.1, the first prototype (see [CHANGELOG.md](CHANGELOG.md)), based on file-converter 0.21.2.
+**State:** version 1.4.0, the first prototype (see [CHANGELOG.md](CHANGELOG.md)), based on file-converter 0.21.2.
 About 1,100 tests. Repository: github.com/noahlevitt/data-warehouse, with its own git history: it started from the
 converter's files, not from its history (section 5).
-Owner: Noah Levitt. Last updated 2026-10-14. Update this file with every release (section 4 in particular).
+Owner: Noah Levitt. Last updated 2026-10-15. Update this file with every release (section 4 in particular).
 
 What the tool does, and how, is in the [README](../README.md) and the documents it lists. Read
 [ARCHITECTURE.md](ARCHITECTURE.md) before changing code and [KNOWN_ISSUES.md](KNOWN_ISSUES.md) before calling
@@ -63,8 +63,8 @@ change them only when a converter fix is ported in (section 5).
 **Delivery** (when the changes can't be pushed directly)
 - Changes go to Noah as a git bundle, `data-warehouse-updateN.bundle`, numbered in order. The repository itself
   came as `data-warehouse-1.0.0.bundle` (complete, no prerequisites); 1.0.1 came as update1, 1.0.2 as update2,
-  1.1.0 as update3, 1.2.0 as update4, 1.2.1 as update5, 1.3.0 as update6 and 1.3.1 as update7, so the next is
-  `data-warehouse-update8.bundle`. Update this line with each bundle.
+  1.1.0 as update3, 1.2.0 as update4, 1.2.1 as update5, 1.3.0 as update6, 1.3.1 as update7 and 1.4.0 as update8, so
+  the next is `data-warehouse-update9.bundle`. Update this line with each bundle.
 
   ```bash
   git bundle create ../data-warehouse-updateN.bundle main vX.Y.Z ^vPREVIOUS
@@ -113,6 +113,7 @@ Decided by Noah on 2026-10-14 unless marked otherwise. Don't reverse one without
 | Names | First name must also find files that put the whole name in First name ("just give a name"); the logic was left to the developer ("figure it out"): a whole name kept in First name (no last name) is also searched as split at a comma, else at its first space; the stored value still matches; see README → Finding records. (Files with a *Name* / *Full Name* column are split by the converter at import, as before.) |
 | Date and days of the week | The last visit and the last call are one field, **Date**, searched as the last visit was; a day of the week can be searched in it (`Fri`, `Friday`: all Fridays), as part of the field or a separate one if necessary (Noah, 2026-10-15). Built in 1.3.0 in the field itself, in every date box: `fri`, `sat sun`, `mon...fri`, `fri 10/2026`. A record with both dates has the later as its Date; both stay stored and exported. |
 | Dates on the screen | Shown with the day of the week, `Fri, 1/1/2026`; tag exports keep the original format the main system imports (Noah, 2026-10-15). Built in 1.3.1: found set and record details (with the time: `Fri, 10/9/2026 3:45 PM`); birthdays and anniversaries without the day; the found-set CSV keeps `10/09/2026` plus a Day column. |
+| Gender | F / M when an import says so (Female, Woman, Girl… = F); Fb / Mb = likely female / male, updated from other information, mostly the first name; automatic if fast, otherwise run by hand on a found set or the whole database (Noah, 2026-10-15). Built in 1.4.0, automatic (fast enough: ~1.5 s per 20,000 imported rows): US SSA baby names since 1930 (≥ 90% one sex, ≥ 10 people), a title first, the email when there is no known first name; never over F / M or a file's other answer (Other, Non-binary stay empty: a choice made while building, easy to change). Not exported (not in the import format). |
 | Repository | A brand-new project and repository, github.com/noahlevitt/data-warehouse, with its own commit history (not file-converter's). |
 | Port | 8502. The file converter keeps running on 8501 on the same computer, so the two must never share a port (1.0.1). |
 
@@ -193,6 +194,23 @@ Customer Records (the repository is `data-warehouse`), and version 1.0.0.
   `value IS NOT NULL` and use their indexes (`test_records_date.py`, `test_records_star_equals.py`); its battery of
   9,530 finds gave the same records as 1.2.1 on an ICU and a C-locale database. Fields still read in full are listed in
   KNOWN_ISSUES #14.
+- **Independent test of 1.4.0** (check 6, a separate Claude agent): it found nine defects, all fixed before release
+  and covered by `tests/test_records_gender.py` and `test_records_app.py`: the converter's fuzzy header matching
+  took "Tender", "Sender", "General" and "Child Gender" for Gender (fixed with `header_words` / `header_not_words`,
+  a new field option of the converter's rules); records from before 1.4.0 ignored their files' Gender column on the
+  upgrade (`gender.read_stored_files`); "N / A", "Not known", "1.0" read as other answers and "F - Female", "♀",
+  "Féminin" not read as female; a spreadsheet error in the cell blocked the guess; Customer Sex / Member Sex
+  headers weren't found; letters outside a short accent list were deleted ("Šárka" → "arka" → Mb), and capital
+  accents weren't folded in C-locale databases; placeholder names (Unknown, Baby) blocked the email; the Date and
+  Record created boxes lost their help text. Also from it: no guess for two people in First name, Mx gives none,
+  more titles (Frau, Herr, Señora…), "Hans-Peter" looked up as Hans. Its second run found that the fixes made the
+  guess 3–5 times slower (PostgreSQL pulled the folding into every join: now computed once per record in
+  materialized steps; ASCII names skip the accent map), that "Jean-François" became Fb (now: no guess when the
+  hyphenated parts disagree), that the upgrade read cells without the converter's cleaning and could pick the other
+  of two gender columns (both fixed), and smaller value, title and header cases (Sr., U - Unknown, M/F, Masc.,
+  Género, Sexe, Stylist Gender): all fixed and tested. Its third run found that answers naming both sexes in other
+  words ("Male to Female", "Intersex (male/female)") were taken for unfilled forms and guessed over (now only
+  "M/F"-style cells are), and "Jean-Noël" → Fb (a hyphenated name now needs both parts to agree): fixed and tested.
 - Limits known and accepted: [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
 ## 5. Taking fixes from the file converter
