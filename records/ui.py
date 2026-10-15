@@ -73,9 +73,9 @@ def _when(ts, tz: str) -> str:
     return ts.astimezone(ZoneInfo(tz)).strftime("%b %d, %Y %I:%M %p")
 
 
-def _show_value(v) -> str:
-    """A record value for the screen (dates as MM/DD/YYYY, date-times with the time)."""
-    return F._cell(v)
+def _show_value(v, weekday: bool = True) -> str:
+    """A record value for the screen: dates as "Fri, 10/9/2026", date-times with the time (records.find.shown)."""
+    return F.shown(v, weekday)
 
 
 def go_find(ctx: Ctx, node: dict, note: str) -> None:
@@ -394,7 +394,8 @@ def _found_set(ctx: Ctx, fields: list[FindField], businesses: list[dict]) -> Non
                          key=f"found_tbl_{sig}_{per_page}_{pg}",
                          column_config={F.ID_COL: st.column_config.NumberColumn(format="%d", width="small"),
                                         "Import #": st.column_config.NumberColumn(format="%d", width="small"),
-                                        "Row": st.column_config.NumberColumn(format="%d", width="small")})
+                                        "Row": st.column_config.NumberColumn(format="%d", width="small"),
+                                        **_date_column_config(ctx.schema, show)})
     sel = list(event.selection.rows) if event and event.selection else []
     ids = [int(table.iloc[i][F.ID_COL]) for i in sel]
 
@@ -423,23 +424,30 @@ def _found_set(ctx: Ctx, fields: list[FindField], businesses: list[dict]) -> Non
     _tag_actions(ctx, cond, params, cnt, businesses)
 
 
+def _date_column_config(schema: TargetSchema, show: list[str]) -> dict:
+    """The found-set table's date columns shown as "Fri, 10/9/2026" (records.find.date_columns): still dates, so a
+    click on the column heading sorts them by date."""
+    return {col: (st.column_config.DateColumn if kind == "date" else st.column_config.DatetimeColumn)(format=fmt)
+            for col, (kind, fmt) in F.date_columns(schema, show).items()}
+
+
 def _record_detail(ctx: Ctx, record_id: int) -> None:
     """Everything stored for one record."""
     rec = ctx.records.record(record_id)
     if rec is None:
         return
     with st.container(border=True):
-        st.markdown(f"**Record ID {rec['id']}** · created {_when(rec['created_at'], ctx.tz)} · {rec['business_id']} · "
+        created = rec["created_at"].astimezone(ZoneInfo(ctx.tz)).replace(tzinfo=None)
+        st.markdown(f"**Record ID {rec['id']}** · created {_show_value(created)} · {rec['business_id']} · "
                     f"{rec['business_name']} · {rec['service_name']}"
                     f" · import #{rec['job_id'] or '—'} ({rec['file_name']}"
                     + (f", sheet {rec['sheet']}" if rec.get("sheet") else "") + f"), row {rec['file_row']}")
         c1, c2 = st.columns(2)
         with c1:
             day = F.record_date(ctx.schema, rec)
-            vals = ([{"Field": F.DATE_COL, "Value": f"{_show_value(day)} {F.day_name(day)}".strip()}]
-                    if date_fields(ctx.schema) else [])
-            vals += [{"Field": f.header, "Value": _show_value(rec.get(f.name))} for f in ctx.schema.fields
-                     if f.type != "phone"]
+            vals = ([{"Field": F.DATE_COL, "Value": _show_value(day)}] if date_fields(ctx.schema) else [])
+            vals += [{"Field": f.header, "Value": _show_value(rec.get(f.name), f.no_year_value is None)}
+                     for f in ctx.schema.fields if f.type != "phone"]
             st.dataframe(pd.DataFrame(vals), hide_index=True, width="stretch")
         with c2:
             if rec["phones"]:
