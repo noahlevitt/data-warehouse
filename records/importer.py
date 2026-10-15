@@ -50,6 +50,7 @@ from converter.mapping import Mapping, profile_columns
 from converter.schema import FieldSpec, TargetSchema
 from converter.storage import ImportRecord, Store
 
+from . import gender
 from .db import column_type, date_only
 from .store import RecordStore
 
@@ -162,6 +163,12 @@ def build_records(schema: TargetSchema, df: pd.DataFrame, result: ConversionResu
                     phones.append((p_out[k], p_raw[k] or "", p_st[k] == CELL_REPAIRED))
         texts = {f.name: a_out[f.name][base] for f in fields}
         values = {f.name: typed_value(f, texts[f.name]) for f in fields}
+        if gender.FIELD in texts:
+            # F or M as the file says (Female, Woman… → F). "Unknown" counts as nothing said (a guess follows);
+            # another answer (Other…) is noted as an issue, which keeps the record from being guessed.
+            values[gender.FIELD] = gender.stated(texts[gender.FIELD])
+            if values[gender.FIELD] is None and not gender.unknown(texts[gender.FIELD]):
+                issues[gender.FIELD] = gender.other_answer(texts[gender.FIELD])
         source = {c: str(v) for c, v in zip(columns, file_values[int(a_src[base])])
                   if c is not None and v is not None and str(v) != ""}
         issue = "" if phones else ((issues.get(phone.name, "") if phone is not None else "") or NO_PHONE)
@@ -218,6 +225,9 @@ class RecordSink:
                 for r in rows:
                     for pos, (num, orig, repaired) in enumerate(r["phones"]):
                         cp.write_row([ids[r["file_row"]], num, pos, repaired, orig or ""])
+            if gender.available(schema):
+                # Fb / Mb from the first name for the records whose file didn't say F or M (records.gender).
+                gender.guess(c, sql.SQL("r.import_id = {}").format(sql.Literal(imp_id)))
             c.execute("""UPDATE imports SET status = 'completed', completed_at = now(), records = %s, phones = %s,
                          no_phone = %s, first_visit_as = %s, columns = %s, sheet = %s, job_id = %s
                          WHERE id = %s""",
