@@ -13,7 +13,9 @@ kind            searched on
 ``phone``       the record's phone numbers (any of them; digits only, any formatting typed)
 ``number``      a number column (total visits, total spent), or the Record ID / file row
 ``job``         the import's number as the Imports page shows it
-``date``        a date or date-time column; birthday / anniversary also take month/day without a year
+``date``        a date or date-time column; birthday / anniversary also take month/day without a year; also the
+                **Date** (key ``date``): the later of the last visit and the last call, as a day
+                (``records.db.date_expr``), the date searched most; every date takes days of the week (``fri``)
 ``bool``        a true/false column (consent)
 ``name``        first and last name together ("Full name": "John Smith")
 ``first``       First name: the stored one, or the first part of a whole name kept in First name with no Last name
@@ -36,7 +38,7 @@ from dataclasses import dataclass
 
 from converter.schema import TargetSchema
 
-from .db import date_only
+from .db import date_expr, date_only
 
 KIND_OF_TYPE = {"phone": "phone", "integer": "number", "decimal": "number", "date": "date", "datetime": "date",
                 "boolean": "bool"}
@@ -50,6 +52,7 @@ class FindField:
     label: str           # shown in the Field dropdown
     kind: str            # how criteria are read (records.criteria)
     column: str = ""     # records column (record fields), file column name (kind "column"), or special column
+    expr: str = ""       # an SQL expression on ``records r`` searched instead of a column (the Date)
     datetime: bool = False   # a date-time column (whole days match from 12:00 AM; a typed time means that minute)
     no_year_value: int | None = None   # birthday / anniversary: the year meaning "no year" (1600)
     help: str = ""
@@ -65,6 +68,10 @@ def find_fields(schema: TargetSchema, columns_seen: list[str]) -> list[FindField
     out = [FindField("any", "Any field", "any", help="every value of the record, cleaned and as in the file"),
            FindField("business", "Business", "business", help="business ID (exact) or name"),
            FindField("service", "Service", "service")]
+    date = date_expr(schema)
+    if date:
+        out.append(FindField("date", "Date", "date", expr=date,
+                             help="the last visit or, in a call log, the last call (the later of the two), a day"))
     names = {f.name for f in schema.fields}
     if {"first_name", "last_name"} <= names:
         out.append(FindField("name", "Full name", "name", help="first and last name together"))
