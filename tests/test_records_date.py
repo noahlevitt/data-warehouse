@@ -1,7 +1,7 @@
 """Customer Records: the Date (the later of the last visit and the last call, as a day) and days of the week in
 date criteria (1.3.0). The records are imported through the real import path into a fresh database."""
 
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 from psycopg import sql
@@ -10,6 +10,7 @@ from converter.storage import Store
 from records import find as F
 from records.db import date_expr
 from records.fields import find_fields
+from records.tags import export_file, export_table
 from records.ui import find_layout
 
 from .records_util import import_file
@@ -136,10 +137,15 @@ def test_the_found_set_shows_sorts_and_writes_the_date(data):
     assert found(data, [{}], sort="Date (newest first)")[:4] == ["Fred", "Mo", "Sue", "Carl"]   # a tie: import order
     cond, params = F.where(F.find_node([{"criteria": [["f:first_name", "bo"]]}]), fields)
     rows = F.page(rs.db, schema, cond, params)
-    table = F.page_frame(rows, schema, [F.DATE, "transactions_last", "calls_last"])
-    assert table.iloc[0][F.DATE_COL] == "10/05/2026 Mon"
-    assert table.iloc[0]["Last visit / order"] == "10/01/2026"
-    assert table.iloc[0]["Last call"] == "10/05/2026 02:00 PM"
+    show = [F.DATE, "transactions_last", "calls_last", "birthday", "first_name"]
+    table = F.page_frame(rows, schema, show)
+    assert table.iloc[0][F.DATE_COL] == date(2026, 10, 5)              # values stay dates: shown by the page as
+    assert table.iloc[0]["Last visit / order"] == date(2026, 10, 1)    # "Mon, 10/5/2026" (date_columns)
+    assert table.iloc[0]["Last call"] == datetime(2026, 10, 5, 14, 0)
+    assert F.date_columns(schema, show) == {
+        "Created": ("datetime", "ddd, M/D/YYYY h:mm A"), F.DATE_COL: ("date", "ddd, M/D/YYYY"),
+        "Last visit / order": ("date", "ddd, M/D/YYYY"), "Last call": ("datetime", "ddd, M/D/YYYY h:mm A"),
+        "Birthday": ("date", "M/D/YYYY")}                              # no day of the week for birthdays
     csv = F.found_set_csv(rs.db, schema, cond, params).decode("utf-8-sig").splitlines()
     head = csv[0].split(",")
     assert head[9:11] == ["Date", "Day"]
@@ -198,3 +204,24 @@ def test_a_changed_date_index_replaces_the_old_one(data):
     assert [r["indexname"] for r in rs.db.fetch("SELECT indexname FROM pg_indexes WHERE indexname LIKE "
                                                 "'records_date_%'")] != ["records_date_0000abcd"]
     assert len(rs.db.fetch("SELECT 1 FROM pg_indexes WHERE indexname LIKE 'records_date_%'")) == 1
+
+
+def test_dates_on_screen_show_their_day_but_tag_exports_keep_the_import_format(data, real_schema):
+    """The screen shows "Fri, 10/9/2026" (decided 2026-10-15); a tag export writes what the main system imports."""
+    assert F.shown(date(2026, 10, 9)) == "Fri, 10/9/2026"
+    assert F.shown(datetime(2026, 10, 9, 15, 45)) == "Fri, 10/9/2026 3:45 PM"
+    assert F.shown(datetime(2026, 10, 9, 0, 5)) == "Fri, 10/9/2026 12:05 AM"
+    assert F.shown(datetime(2026, 10, 9, 12, 0)) == "Fri, 10/9/2026 12:00 PM"
+    assert F.shown(date(1600, 9, 12), weekday=False) == "9/12/1600"
+    assert F.shown(None) == "" and F.shown("Bayside") == "Bayside"
+    rs, schema = data
+    tag = rs.create_tag("1001", "Fridays")
+    cond, params = F.where(F.find_node([{"criteria": [["date", "fri"]]}]), find_fields(schema, rs.columns_seen()))
+    rs.add_to_tag(tag, cond, params)
+    table, _ = export_table(rs.db, tag, schema, real_schema)
+    by = {r["phone_number"]: r for r in table.to_dict("records")}
+    assert by["5165550101"]["transactions_last"] == "10/09/2026 12:00 AM"       # Fay: the last visit, a day
+    assert by["9175550201"]["calls_last"] == "10/09/2026 11:30 PM"              # Cal: the call keeps its time
+    assert not any("Fri" in str(v) for r in by.values() for v in r.values())
+    data_file, _ = export_file(rs.db, tag, schema, real_schema)
+    assert "10/09/2026 12:00 AM" in data_file.decode() and "Fri," not in data_file.decode()
