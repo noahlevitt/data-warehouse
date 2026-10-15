@@ -5,9 +5,11 @@ that makes st.navigation run the wanted page (docs/HANDOFF.md, "Checks before a 
 database pool and runner for the process, so the module shares one data folder and one database.
 """
 
+import json
 import os
 import textwrap
 import time
+from datetime import date
 
 import pytest
 import streamlit as st
@@ -175,8 +177,10 @@ def test_nothing_is_required_a_blank_find_shows_every_record(env):
     button(at, "Find").click().run()
     assert not at.error and [m.value for m in at.metric][0] == "2"
     assert any("Blank find" in c.value for c in at.caption)
-    [found] = [d.value for d in at.dataframe if F.ID_COL in d.value.columns]
-    assert len(found) == 2 and found["Created"].str.match(r"\d\d/\d\d/\d{4} \d\d:\d\d [AP]M").all()
+    [found] = [d for d in at.dataframe if F.ID_COL in d.value.columns]
+    assert len(found.value) == 2 and str(found.value["Created"].dtype).startswith("datetime64")
+    config = json.loads(found.proto.columns)       # shown as "Thu, 10/15/2026 10:48 AM", sorted as a date-time
+    assert config["Created"]["type_config"]["format"] == "ddd, M/D/YYYY h:mm A"
 
 
 def test_a_business_without_one_of_its_services(env):
@@ -262,7 +266,8 @@ def test_a_day_of_the_week_in_the_date_box(env):
     button(at, "Find").click().run()
     assert [m.value for m in at.metric][0] == "1"
     table = at.dataframe[0].value
-    assert list(table["Date"]) == ["10/02/2026 Fri"]
+    assert list(table["Date"]) == [date(2026, 10, 2)]                                   # a date, sorted as one
+    assert json.loads(at.dataframe[0].proto.columns)["Date"]["type_config"]["format"] == "ddd, M/D/YYYY"
     assert at.selectbox(key="found_sort").options[3] == "Date (newest first)"
 
 
