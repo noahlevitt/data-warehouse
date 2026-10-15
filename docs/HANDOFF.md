@@ -3,8 +3,8 @@
 For whoever picks Customer Records up next: a person, or Claude in a new chat. It records what the code and the
 other documents don't: how changes are made and delivered, the decisions the business made, and what is still open.
 
-**State:** version 1.4.0, the first prototype (see [CHANGELOG.md](CHANGELOG.md)), based on file-converter 0.21.2.
-About 1,100 tests. Repository: github.com/noahlevitt/data-warehouse, with its own git history: it started from the
+**State:** version 1.5.0, the first prototype (see [CHANGELOG.md](CHANGELOG.md)), based on file-converter 0.21.2.
+About 1,250 tests. Repository: github.com/noahlevitt/data-warehouse, with its own git history: it started from the
 converter's files, not from its history (section 5).
 Owner: Noah Levitt. Last updated 2026-10-15. Update this file with every release (section 4 in particular).
 
@@ -37,7 +37,7 @@ something a bug. The conversion engine's own handoff, with the converter project
   `vX.Y.Z` on its last commit (the "Version X.Y.Z" commit), pushed with the branch (`git push origin vX.Y.Z`).
 
 **Checks before a release** (all of them, every time)
-1. The whole test suite: `.venv/bin/python -m pytest -q` (about 1,100 tests, about 1½ minutes). PostgreSQL must be
+1. The whole test suite: `.venv/bin/python -m pytest -q` (about 1,250 tests, about 3 minutes). PostgreSQL must be
    installed: the tests start a private server (see `tests/conftest.py`), or set `RECORDS_TEST_DATABASE_URL`.
    Records tests that are *skipped* mean PostgreSQL wasn't found: that is not a pass.
 2. New tests fail on the previous version: copy them into `git worktree add -f /tmp/old vPREVIOUS`, run them there,
@@ -63,8 +63,8 @@ change them only when a converter fix is ported in (section 5).
 **Delivery** (when the changes can't be pushed directly)
 - Changes go to Noah as a git bundle, `data-warehouse-updateN.bundle`, numbered in order. The repository itself
   came as `data-warehouse-1.0.0.bundle` (complete, no prerequisites); 1.0.1 came as update1, 1.0.2 as update2,
-  1.1.0 as update3, 1.2.0 as update4, 1.2.1 as update5, 1.3.0 as update6, 1.3.1 as update7 and 1.4.0 as update8, so
-  the next is `data-warehouse-update9.bundle`. Update this line with each bundle.
+  1.1.0 as update3, 1.2.0 as update4, 1.2.1 as update5, 1.3.0 as update6, 1.3.1 as update7, 1.4.0 as update8 and
+  1.5.0 as update9, so the next is `data-warehouse-update10.bundle`. Update this line with each bundle.
 
   ```bash
   git bundle create ../data-warehouse-updateN.bundle main vX.Y.Z ^vPREVIOUS
@@ -116,12 +116,15 @@ Decided by Noah on 2026-10-14 unless marked otherwise. Don't reverse one without
 | Gender | F / M when an import says so (Female, Woman, Girl… = F); Fb / Mb = likely female / male, updated from other information, mostly the first name; automatic if fast, otherwise run by hand on a found set or the whole database (Noah, 2026-10-15). Built in 1.4.0, automatic (fast enough: ~1.5 s per 20,000 imported rows): US SSA baby names since 1930 (≥ 90% one sex, ≥ 10 people), a title first, the email when there is no known first name; never over F / M or a file's other answer (Other, Non-binary stay empty: a choice made while building, easy to change). Not exported (not in the import format). |
 | Repository | A brand-new project and repository, github.com/noahlevitt/data-warehouse, with its own commit history (not file-converter's). |
 | Port | 8502. The file converter keeps running on 8501 on the same computer, so the two must never share a port (1.0.1). |
+| Shared server | One shared copy on a server for the staff who import and review mappings: a few now, 5–20 users expected, possibly more later. Logins on. The front end stays Streamlit for now; a React version (the main app is React) is postponed, possibly tried on a branch (Noah, 2026-10-15). Built in 1.5.0: the Docker setup always has logins (`AUTH_MODE=password` in `docker-compose.yml`), is published on the server itself only (`127.0.0.1:8502`) for Caddy's HTTPS, ships no admin password, and the README gives the steps and the server size (choices made while building). |
+| Imports at once | Five imports at the same time (Noah, 2026-10-15). Built in 1.5.0: `IMPORT_WORKERS` defaults to 5 and each import runs in its own worker process (`records/runner.py`); in threads they took turns and five took as long as five in a row. Stopping the server now interrupts running and queued imports instead of finishing them (a choice made while building). |
 
 **Carried over from the converter, not yet confirmed for this project** (stated in the plan on 2026-10-14 and not
 objected to; the converter's handoff asks to confirm each one for a new project): US numbers only (+1 assumed); the
 five approved phone repairs (imported and marked); fax numbers never used; consent and last_contacted mapped by a
 person only, per file; year 1600 only for birthday and anniversary; no templates for files without a header row;
-logins off; the "approve guessing features one by one" rule.
+the "approve guessing features one by one" rule. (Logins off was carried over too, until Noah asked for logins on the
+shared server, 2026-10-15.)
 
 **Made while building 1.0.0, to confirm** (each is easy to change): when a number is in several records of a tag,
 its export takes the latest date of each activity and the birthday/anniversary with a real year; the creation date
@@ -211,6 +214,22 @@ Customer Records (the repository is `data-warehouse`), and version 1.0.0.
   Género, Sexe, Stylist Gender): all fixed and tested. Its third run found that answers naming both sexes in other
   words ("Male to Female", "Intersex (male/female)") were taken for unfilled forms and guessed over (now only
   "M/F"-style cells are), and "Jean-Noël" → Fb (a hyphenated name now needs both parts to agree): fixed and tested.
+- **Independent test of 1.5.0** (check 6, a separate Claude agent, on the runner, the server setup and logins): the
+  runner held up (14 mixed files at once gave the same records as one at a time; cancels and kill -9 at every stage,
+  and a killed server, left nothing behind). It found ten points; fixed before release and tested
+  (`tests/test_records_runner.py`, `test_records_app.py`, `test_server_setup.py`): stopping the server ran every
+  queued import before exiting, with the pages already gone (now running and queued imports end *interrupted*, within
+  seconds); an import left interrupted with its records stored, which could be neither re-run nor deleted (a new
+  start removes them); a worker that couldn't reach PostgreSQL converted the whole file and then reported a pool
+  timeout (now PostgreSQL's reason, at once); a relative `DATA_DIR` broke every import when the server was started
+  from another folder; a deleted account kept working in a tab already signed in; Businesses and Services didn't show
+  who added them; `docker-compose.yml` published the port on every address (Docker bypasses `ufw`: plain HTTP to the
+  sign-in page) and `.env.example` allowed an empty admin password without saying what that means on a server; the
+  converter's OPERATIONS.md (linked for Caddy) contradicts the README on size and logins (the README now says it
+  wins). Not fixed, low: a job store locked for over a minute leaves an import queued until a restart;
+  `IMPORT_WORKERS=` (empty) stops the app (the converter's settings parse it) and a wrong setting shows only
+  "ValueError" on the page; signing in lasts as long as the browser tab and a link opens the first page after
+  signing in (KNOWN_ISSUES #21).
 - Limits known and accepted: [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
 ## 5. Taking fixes from the file converter
