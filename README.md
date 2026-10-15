@@ -84,6 +84,7 @@ The column matching, the review page and every conversion rule are the converter
 |---|---|---|
 | Phone | 10-digit US numbers (all of a row's) | Phone, Mobile, Cell, Home Phone, phone2… |
 | First name, Last name | text | First Name, Last Name; a whole-name column (*Name*, *Full Name*, *Customer Name*, *Guest*) is split by the converter into first and last word ("Ray, Lisa" too); a whole name in a *First Name* column stays there, and is found by First and Last name (see Finding records) |
+| Gender | `F` / `M` as the file says (Female, Woman, Girl, W… → F; Male, Man, Boy… → M); `Fb` / `Mb` likely female / male, **guessed** from the first name (or the email) | Gender, Sex; guessed for everyone else (see below); not in the import format, so never exported |
 | Email | email (lower-cased) | Email, E-mail |
 | Address, Address 2, City, State, ZIP | text, 2-letter state, 5-digit ZIP | Address, City, State, Zip; a one-line address is split |
 | Total visits | whole number | Visits, Visit Count, Total Orders |
@@ -103,7 +104,7 @@ To add a field, add it to the YAML file and restart the app: its database column
 A find is one or more **requests**. **Nothing is required**: fill in only what you're looking for, and a Find with
 everything blank shows every record. Each request shows what is searched most: **Business** and **Services**
 pickers (one or more of each; empty = any) and **Date**, then **Phone**, **First name** and **Last name**. Every
-other field is one click away under **＋ Add a field** (and taken off again with its ✕): Full name, Email, address,
+other field is one click away under **＋ Add a field** (and taken off again with its ✕): Full name, Gender, Email, address,
 City, State, ZIP, Total visits, Total spent, Record created (the import date), Birthday, Anniversary, the other
 dates (first visit, last text, redemption, spin, contacted), Any field, Consent, Phone problem, Tag, Import #, File
 name, Record ID, File row and the files' own columns. In one request a record must match **everything filled in** (AND); several requests **add
@@ -128,6 +129,17 @@ without it: `9/12/1985`); a click on a date column's heading sorts by date. **Ta
 with no Last name ("Lisa Marie Ray"). First name and Last name also read such a name as split at its first space
 (Lisa / Marie Ray), or at its comma ("Ray, Lisa": Ray is the last name), so First name `lisa` and Last name `ray`
 both find it; `=` and `*` look at the stored names only. *Full name* searches first and last together (`lisa ray`).
+
+**Gender** is `F` or `M` when the file said so (a column whose header says gender or sex: Female, Woman, Girl,
+F - Female, ♀… become F) and `Fb` or `Mb` when it is likely: guessed for every record whose file said neither, from
+the first name (its first word; a title such as Mr, Mrs, Frau, Señora decides first; two people, "John and Mary",
+get none), or from the email when there is no known first name. The guess uses US Social Security baby names since
+1930 (`records/names/`, public domain): a name at least 90% of whose people were girls gives `Fb`, boys `Mb`; names
+given to both (Jordan, Riley) give none. Imports are guessed as they are stored; on the first start of 1.4.0,
+records imported before get what their files' Gender column said, then guesses. A guess never replaces F or M, nor
+a file's own other answer (Other, Non-binary, Mx: the gender stays empty); Unknown, N/A and number codes count as
+nothing said. Search it as a
+word: `f` finds F and Fb, `=f` only F, `fb` only the guesses.
 
 **`*` alone** in any box finds the records where that field has a value, **`=` alone** those where it is blank
 (Phone `=`: no usable number; Tag `=`: in no tag; a file's column `=`: also records from files without it; a value
