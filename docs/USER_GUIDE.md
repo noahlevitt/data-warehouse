@@ -6,8 +6,11 @@ column matching) are the file converter's, described in [converter/USER_GUIDE.md
 
 ## Opening it
 
-Open the address in a browser (on one computer: http://localhost:8502). There is no login for now. The menu on the
-left has **Records** (Find, Tags, New import, Imports) and **Setup** (Businesses, Services, Templates, Fields).
+Open the address in a browser (on one computer: http://localhost:8502). On the team's server, sign in with your own
+account: an admin adds accounts on **Setup → Users**, and each person changes their password under **My account** in
+the menu (*Sign out* is there too). Imports, tags, businesses and services show who made them. On one computer there
+is no login. The menu on the left has **Records** (Find, Tags, New import, Imports) and **Setup** (Businesses,
+Services, Templates, Fields, and Users for admins on the server).
 
 ## 1 · Set up businesses and services (once)
 
@@ -25,7 +28,8 @@ left has **Records** (Find, Tags, New import, Imports) and **Setup** (Businesses
    *Columns in your file*, notes, *Check for mistakes*). Columns that feed no field are still kept on each record
    as written; tick **Skip** to leave a column out completely.
 4. **Start import**. It runs in the background; its page shows the progress, then how many records were stored,
-   how many different phone numbers, and how many rows have no usable number.
+   how many different phone numbers, and how many rows have no usable number. Up to five imports run at the same
+   time (everyone's together); more wait as *Queued* and start by themselves.
 
 Good to know:
 
