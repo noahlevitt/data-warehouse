@@ -35,6 +35,7 @@ Every rule-made :class:`~converter.mapping.FieldMapping` gets ``origin="rule"``,
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import Counter
 from typing import TYPE_CHECKING, Iterator
 
@@ -254,6 +255,12 @@ def enough_evidence(p: ColumnProfile, share: float, minimum: float = 0.9) -> boo
     return share >= minimum and p.unique >= min(3, p.non_empty)
 
 
+def plain_letters(text: str) -> str:
+    """The text with accents taken off ("Género" → "Genero", "Sexe" stays), for comparing words with
+    ``FieldSpec.header_words`` (:func:`_words` drops letters it doesn't know)."""
+    return "".join(c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c))
+
+
 def header_score(column: str, f: FieldSpec) -> float:
     """How well the header ``column`` names field ``f``, from 0 (unrelated) to 100 (exact name or synonym).
 
@@ -343,7 +350,8 @@ def score(column: ColumnProfile, f: FieldSpec) -> float:
 
     * Consent columns -> 0: never mapped. Fax columns -> 0 for phone fields: a fax line can't receive texts.
       A date about a birthday or anniversary ("Birthday Reward Sent", :data:`DATE_EVENT_WORDS`) -> 0 for "date"
-      fields.
+      fields. A field with ``header_words`` -> 0 unless the header has one of them (or is an exact name), and a
+      header with one of its ``header_not_words`` -> 0.
     * A header naming another kind of number ("Account Number", "Order #", "Loyalty ID") gets no header evidence
       for the phone field (:func:`names_other_number`).
     * Empty column (no values in this file) -> half the header score: no value evidence, so it can't reach the
@@ -369,6 +377,12 @@ def score(column: ColumnProfile, f: FieldSpec) -> float:
     if f.type == "date" and set(_words(column.name)) & DATE_EVENT_WORDS:
         return 0.0
     hs = header_score(column.name, f)
+    # A field that must be named by its header (FieldSpec.header_words; Customer Records' gender): "Tender" or
+    # "General" only look like "Gender", "Child Gender" is someone else's.
+    if f.header_words or f.header_not_words:
+        words = set(_words(plain_letters(column.name)))
+        if words & set(f.header_not_words) or (f.header_words and not words & set(f.header_words) and hs < 100):
+            return 0.0
     # "Account Number" looks a lot like "contact number" / "phone number" to a fuzzy comparison, and ten-digit IDs
     # are often valid phone numbers by chance: without this, an ID column could be taken for the phone. Such a
     # header gives no header evidence for the phone field; only clear phone values can still make it one (step 2).
