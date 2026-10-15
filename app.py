@@ -22,7 +22,7 @@ How this file is organised (top to bottom)
 ------------------------------------------
 1. Imports, settings and small constants (US time zones, column labels of the review grids).
 2. Shared resources, built once per server process with st.cache_resource: the SQLite Store, the background
-   ImportRunner thread pool, the target schema (reloaded when the YAML file changes) and the optional Claude
+   import runner (records.runner, one worker process per running import), the target schema (reloaded when the YAML file changes) and the optional Claude
    assistant. Then module-level setup: load the schema, sign the user in and seed session-state counters.
 3. New import: state helpers (load_and_map, start_import, rerun_import, data-editor callbacks), the page itself
    (page_new_import) and its "Columns in your file" / notes / mistake-check panel (_notes_and_checks).
@@ -46,8 +46,8 @@ mapping (saved template, then rules, then optionally Claude) → the reviewer ed
 grid, and "Columns in your file"), optionally applies notes with Claude or runs a mistake check → start_import()
 saves the template, registers the import in PostgreSQL (business, service, file), creates the job record plus a
 stored copy of the file, and hands the id to the runner → the browser is sent to that import's page. The
-conversion itself runs in a background thread (converter.jobs, with records.importer.RecordSink storing the
-records), which writes progress to data/converter.db; the Imports pages poll it with st.fragment(run_every=...)
+conversion itself runs in a worker process (records.runner runs converter.jobs.run_import there, with
+records.importer.RecordSink storing the records), which writes progress to data/converter.db; the Imports pages poll it with st.fragment(run_every=...)
 until it finishes.
 
 Two databases: data/converter.db (SQLite, as in the converter) holds the app's own state — import jobs and their
@@ -87,7 +87,6 @@ from converter.checks import column_warnings
 from converter.editor import (FROM_LABEL, LABELS, OPTION_HELP, apply_column_edit, apply_row_edit, option_text,
                               row_problem)
 from converter.engine import convert, count_multi_number_cells, preview_values, source_rows
-from converter.jobs import ImportRunner
 from converter.mapping import Mapping, area_code_pairs, has_generic_columns, profile_columns
 from converter.numberlog import lookup as number_lookup
 from converter.normalizers import sheet_error
@@ -103,6 +102,7 @@ from records import ui as records_ui
 from records.config import get_records_settings
 from records.db import Database, DatabaseError, ensure_database
 from records.importer import RecordSink
+from records.runner import ProcessImportRunner
 from records.store import RecordStore
 
 log = logging.getLogger("app")
@@ -231,8 +231,8 @@ COL_PREVIEW, COL_CHECK, COL_BY, COL_WHY = "Sample output", "Check", "Mapped by",
 # ---------------------------------------------------------------------------
 
 # Everything in this section is created once and shared by every user and browser tab. st.cache_resource returns
-# the same object on every rerun instead of rebuilding it, which matters here: a second ImportRunner would start a
-# second thread pool (and mark running imports as interrupted again), and a second Store would re-run its setup.
+# the same object on every rerun instead of rebuilding it, which matters here: a second import runner would start a
+# second set of import slots (and mark running imports as interrupted again), and a second Store would re-run its setup.
 
 @st.cache_resource
 def get_store() -> Store:
@@ -254,24 +254,26 @@ def get_records_db() -> tuple[Database, list[str]]:
     what to do) when PostgreSQL can't be reached; the module-level setup shows it on the page.
     """
     ensure_database(rsettings.database_url)
-    db = Database(rsettings.database_url)
+    db = Database(rsettings.database_url, max_size=rsettings.database_pool_size)
     return db, db.setup(load_schema(rsettings.records_schema_path))
 
 
 @st.cache_resource
-def get_runner() -> ImportRunner:
-    """Return the one background ImportRunner (thread pool) for this server process.
+def get_runner() -> ProcessImportRunner:
+    """Return the one background import runner for this server process.
 
     Creating it has side effects, which is why it must only happen once: imports that were queued or running when
     the server last stopped are marked "interrupted" (they can't resume) and stored files older than
-    FILE_RETENTION_DAYS are purged. IMPORT_WORKERS sets how many imports convert at the same time; the rest wait in
-    the queue. Its sink (records.importer.RecordSink) stores each import's rows as records in PostgreSQL, instead of
-    the converter's number history (not used here: the records themselves are the history).
+    FILE_RETENTION_DAYS are purged. IMPORT_WORKERS (default 5) sets how many imports convert at the same time, each
+    in its own worker process (records.runner); the rest wait in the queue. Each worker process stores its import's
+    rows as records in PostgreSQL (records.importer.RecordSink), instead of the converter's number history (not used
+    here: the records themselves are the history). The sink given here only cleans up after a worker process that
+    ended without a result.
     """
     db, _ = get_records_db()
-    return ImportRunner(get_store(), workers=settings.import_workers, retention_days=settings.file_retention_days,
-                        record_days=settings.number_record_days, backfill=False,
-                        sink=RecordSink(RecordStore(db), get_store()))
+    return ProcessImportRunner(get_store(), rsettings.database_url, workers=rsettings.import_workers,
+                               retention_days=settings.file_retention_days, record_days=settings.number_record_days,
+                               sink=RecordSink(RecordStore(db), get_store()))
 
 
 @st.cache_resource
@@ -364,6 +366,14 @@ apply_theme(st.session_state.get("theme_pref"), slot="login")
 # Draws the login form (or the first-run "create admin" form) and stops the run until someone is signed in.
 # With AUTH_MODE=none it returns a local admin user straight away. `user` is a dict: username, is_admin.
 user = require_login(store, settings, APP_TITLE)
+if settings.auth_mode != "none":
+    # The account as it is now (1.5.0): an account an admin deleted signs out of a tab already signed in, and a
+    # changed admin flag applies on the next click instead of at the next sign-in.
+    account = next((u for u in store.list_users() if u["username"] == user["username"]), None)
+    if account is None:
+        logout()
+        st.rerun()
+    user = st.session_state["user"] = {"username": account["username"], "is_admin": bool(account["is_admin"])}
 
 ss = st.session_state
 # Counters appended to widget keys; bumping one gives that widget a fresh key and therefore fresh state
