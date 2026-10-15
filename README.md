@@ -119,9 +119,11 @@ any box is **Find**. Then:
 Every record has its own **Record ID** and its **Record created** date and time (when its import stored it), shown
 in the found set and searchable like any number and date. **Date** is a record's last visit or, from a call log,
 its last call: one field for both (the later of the two when a record has both), a day only, searched by days
-(`1/1/2026...1/20/2026`) and by **day of the week** (`fri` finds every Friday). The found set shows it with its day
-("10/09/2026 Fri"), first of the chosen columns; Last visit / order and Last call stay as they were in the records
-and the exports.
+(`1/1/2026...1/20/2026`) and by **day of the week** (`fri` finds every Friday). The found set shows it first of the
+chosen columns; Last visit / order and Last call stay as they were in the records and the exports. **On the screen,
+dates show their day of the week**: `Fri, 10/9/2026`, `Fri, 10/9/2026 3:45 PM` (birthdays and anniversaries
+without it: `9/12/1985`); a click on a date column's heading sorts by date. **Tag exports keep the import format**
+(`10/09/2026 12:00 AM`), and the found-set CSV keeps `10/09/2026` with the day in a column of its own.
 **Names**: a file whose *First Name* column holds whole names leaves them in First name
 with no Last name ("Lisa Marie Ray"). First name and Last name also read such a name as split at its first space
 (Lisa / Marie Ray), or at its comma ("Ray, Lisa": Ray is the last name), so First name `lisa` and Last name `ray`
@@ -184,6 +186,7 @@ City). **October birthdays** — Add a field → Birthday, `10/*`.
   found sets at any time; the tag's history lists every change.
 - **Export**: one row per **unique phone number** of the tag's records, in the converter's import format
   (`schemas/target_schema.yaml`: same headers, order, formats, CSV settings), written by the converter's writer.
+  Dates are written as that format says (`10/09/2026 12:00 AM`), never as the screen shows them (`Fri, 10/9/2026`).
   Records without a usable number are left out and counted. The file is named `<business ID>_<tag>_<date-time>.csv`.
 
 When one number is in several records:
