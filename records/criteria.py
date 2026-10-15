@@ -52,7 +52,10 @@ first space (first name Lisa, last name Marie Ray), or at its comma ("Ray, Lisa"
 First name `lisa` and Last name `ray` both find it. `=` and `*` look at the stored names only. **Full name** (under
 Add a field) searches first and last together: `lisa ray`.
 
-**Text** (names, email, address, city, Any field, file columns, Tag, File name)
+**Gender**: `F` or `M` when the file said so, `Fb` or `Mb` when it is likely, guessed from the first name. As a
+word, `f` finds F and Fb, `=f` only F, `fb` only the guesses; `=` the records with none.
+
+**Text** (names, gender, email, address, city, Any field, file columns, Tag, File name)
 - `smith` — a word starting with "smith" (Smith, Smithson; not Goldsmith); upper/lower case never matters
 - `john smith` — both words, in any order · `=smith` — the whole word · `==john smith` — exactly the whole field
 - `"main st"` — this exact text anywhere, punctuation included · `sm*th` — `*` is any characters
