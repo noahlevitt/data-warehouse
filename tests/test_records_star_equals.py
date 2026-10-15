@@ -98,3 +98,24 @@ def test_a_value_the_import_couldnt_read_counts_as_blank(rstore, records_schema,
     assert len(found(rstore, records_schema, "f:total_visits", "=")) == 1
     assert len(found(rstore, records_schema, "f:total_visits", "*")) == 1
     assert len(found(rstore, records_schema, "col:Visits", "*")) == 2
+
+
+def test_an_omit_keeps_the_records_where_the_field_is_blank_for_every_field(two):
+    """Text, number and date criteria (the Date too) are made NULL-safe with "value IS NOT NULL" instead of COALESCE
+    (1.3.0, so indexes can be used): an Omit of what the full record matches must still keep the blank one."""
+    rs, schema, ids = two
+    matching = {"text": ">=0", "number": ">=0", "date": "1/1/1000...12/31/9998"}
+    checked = []
+    for f in find_fields(schema, rs.columns_seen()):
+        if f.kind not in matching or not (f.column or f.expr) or f.key.startswith("col:"):
+            continue
+        fields = find_fields(schema, rs.columns_seen())
+        cond, params = F.where(F.find_node([{"omit": True, "criteria": [[f.key, matching[f.kind]]]}]), fields,
+                               collation=rs.db.collation)
+        kept = {r["id"] for r in F.page(rs.db, schema, cond, params, limit=100)}
+        filled = found(rs, schema, f.key, matching[f.kind])
+        assert kept == {ids["full"], ids["blank"]} - filled, f.key
+        if f.key not in ("record", "row"):                  # every record has an ID and a file row
+            assert filled == {ids["full"]} and kept == {ids["blank"]}, f.key
+        checked.append(f.key)
+    assert {"f:city", "f:total_visits", "f:birthday", "f:transactions_last", "date", "record"} <= set(checked)
