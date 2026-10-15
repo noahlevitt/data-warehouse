@@ -155,6 +155,17 @@ class FieldSpec(BaseModel):
         description="date/datetime only: holds the customer's creation / sign-up / first-visit date; never counts "
         "as a last-activity date when generic date columns are routed.",
     )
+    # The rules (heuristics.score) map a column to this field only when its header has one of these words (or is
+    # exactly one of the field's names), and never when it has one of header_not_words: for fields whose short
+    # names look like other words ("gender" ~ "tender", "sender") or are often about someone else ("Child Gender").
+    # Added for Customer Records 1.4.0 (its gender field); the converter's import format uses neither.
+    header_words: list[str] = Field(
+        default_factory=list,
+        description="the rules map a column only when its header has one of these words (or is an exact name)",
+    )
+    header_not_words: list[str] = Field(
+        default_factory=list, description="the rules never map a column whose header has one of these words",
+    )
     # date fields: year written for a month + day without a year (e.g. birthday "9/12" -> 09/12/1600).
     no_year_value: int | None = Field(
         None,
