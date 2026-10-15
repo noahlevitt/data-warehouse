@@ -16,6 +16,7 @@
 #   - no duplicate removal (dedupe keys empty): every file row is its own record.
 #   - names, email, address, visits, spend and the first-visit / sign-up date are kept.
 #   - transactions_last (the last visit) keeps the day only: its format has no time.
+#   - gender (not in the import format, so never exported): F / M from the file, Fb / Mb guessed.
 #
 # The database (PostgreSQL) gets one column per field, created when the app starts; adding a field here adds its
 # column. Renaming or retyping a field does not change an existing column (see docs/KNOWN_ISSUES.md #2), with one
@@ -60,6 +61,25 @@ fields:
     type: string
     description: Customer's last (family) name
     synonyms: [last, lname, surname, family name, last nm, lastname]
+
+  # F or M when the file says so (Female, Woman, Girl… → F; records.gender.stated); Fb / Mb = likely female / male,
+  # guessed from the first name (or the email) when it doesn't (records.gender.guess). Not in the export format.
+  - name: gender
+    header: Gender
+    type: string
+    description: F or M as the file says; Fb / Mb likely female / male, guessed from the first name
+    synonyms: [sex, gender identity, male/female, female/male, m/f, f/m, "sex (m/f)", "gender (m/f)", customer sex,
+               guest sex, member sex, client sex, patient sex, sex code, gender code, sex of customer,
+               customer gender, guest gender, member gender, client gender, sex at birth, birth sex, legal sex,
+               gender at birth, geschlecht, genero, sexo, sexe, sesso, genere]
+    # Mapped by the rules only when the header says gender or sex ("Tender", "General" look like "Gender"), and
+    # never when it is about someone else ("Child Gender", "Spouse Sex", "Stylist Gender Preference").
+    header_words: [gender, sex, geschlecht, genero, sexo, sexe, sesso, genere]
+    header_not_words: [child, children, kid, kids, baby, babies, infant, son, sons, daughter, daughters, grandchild,
+                       grandchildren, spouse, partner, husband, wife, mother, father, sibling, dependent,
+                       guardian, recipient, beneficiary, staff, employee, server, stylist, therapist, provider,
+                       doctor, physician, nurse, agent, rep, representative, teacher, trainer, coach, instructor,
+                       caregiver, preference, preferences, pet, dog, cat, offender]
 
   - name: email
     header: Email
