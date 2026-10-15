@@ -61,6 +61,7 @@ job's `read_options` has `records_import_id`. See KNOWN_ISSUES #1 for what that 
 | `fields.py` | What a find can search: the record fields plus Date (an expression, `FindField.expr`), Any field, Full name, Business, Service, Tag, Phone problem, Import #, File name, Record created, Record ID, File row, Column: …; which have pickers instead (`PICKER_KEYS`). First and Last name are searched through `criteria.name_condition` (also the parts of a whole name kept in First name). |
 | `criteria.py` | One criterion → one SQL condition, per kind of field (text, phone, number, date, true/false, business, …), FileMaker syntax; values always as parameters; every condition `COALESCE(…, false)`. The module docstring is the syntax reference (also shown on the page). |
 | `find.py` | Requests (businesses, services, criteria; all optional) → found-set nodes (find, constrain, extend, omit records, show omitted, all, tag) → one SQL condition; counts, pages (sorts, the Date as `activity_date`), CSV (with Date and Day), `record_date` / `day_name`; how the screen shows dates (`shown`, `date_columns`, `DAY_FORMAT`: "Fri, 10/9/2026"). |
+| `gender.py` | Gender: `stated` (a file's Female, Woman, F - Female, ♀… → F / M), `unknown` (Unknown, N/A, codes, Dr), `other_answer`, `guess` (one SQL UPDATE: no guess for two people; Fb / Mb from a title, the first name in `first_names` (≥ 90% of one sex, ≥ 10 people; accents off, also in C-locale databases; a hyphenated name's first part) or the email's first word; never over F / M or a file's other answer); `read_stored_files` (upgrading: what the stored rows' Gender column said, in the column `header_column` picks as the rules would); `load_names` / `names_version` (the shipped `names/first_names.csv.gz`, built by `scripts/names/build_first_names.py` from US SSA baby names 1930–2017, CC0). |
 | `tags.py` | A tag's export: one row per unique number, filled by name from the record fields with the merge rules, written with the converter's writer; the file name. |
 | `ui.py` | The Find, Tags, Businesses and Services pages (Streamlit), given a `Ctx` by `app.py`. |
 
@@ -77,8 +78,9 @@ Kept small so fixes from file-converter apply cleanly ([HANDOFF.md](HANDOFF.md),
 
 | File | Change |
 |---|---|
-| `schema.py` | `FieldSpec.creation_date` (validated: date/date-time fields without `generic_date`). |
+| `schema.py` | `FieldSpec.creation_date` (validated: date/date-time fields without `generic_date`); `FieldSpec.header_words` / `header_not_words` (1.4.0: the rules map a column to such a field only when its header has one of the words, or is an exact name, and never with one of the not-words). |
 | `heuristics.py` | Step 7 (`_map_generic_dates`) ignores `creation_date` fields when deciding whether a file already has a last date. The converter's format has none, so its results are unchanged (regression check: identical). |
+| `heuristics.py` (1.4.0) | `score` returns 0 for a field with `header_words` when the header has none of them (unless it is an exact name), and for a header with one of its `header_not_words`. The converter's format uses neither, so its results are unchanged (regression check: identical). |
 | `jobs.py` | `run_import(..., sink=None)` and `ImportRunner(..., sink=None)`: with a sink, `sink.save` replaces the number history step and adds to the summary; `sink.discard` runs when the import then ends cancelled or failed. |
 
 ## Tables (PostgreSQL)
@@ -93,7 +95,8 @@ Kept small so fixes from file-converter apply cleanly ([HANDOFF.md](HANDOFF.md),
 | `tags` | `id`, `business_id`, `name` (unique per business, any case), `notes`, created, updated |
 | `tag_records` | `tag_id`, `record_id` (both cascade), added at / by |
 | `tag_events` | `tag_id`, at, username, action (created / added / removed / renamed / exported), count, detail |
-| `app_meta` | small facts (pg_trgm available) |
+| `app_meta` | small facts (pg_trgm available, the version of the loaded name table) |
+| `first_names` | `name` (lower case), `female`, `male`: US first names with how many girls and boys got them, for gender guesses |
 
 Foreign keys to `businesses` are `ON UPDATE CASCADE`, so a corrected business ID follows everywhere.
 
@@ -127,6 +130,7 @@ Foreign keys to `businesses` are `ON UPDATE CASCADE`, so a corrected business ID
 | One business per tag; counts of left-out records | `store.add_to_tag` |
 | Export: one row per number; latest dates; birthday with a year; consent blank; creation date per import | `tags.export_table`, `ALWAYS_BLANK`, `_pick_date`; `importer.creation_fallback` |
 | No live formulas in the found-set CSV | `find.found_set_csv` (`neutralise_formula`) |
+| Gender: F / M from the file; Fb / Mb guessed on import and, once, for records stored before (or when the name table changes); never exported | `gender.stated` in `importer.build_records`, `gender.guess` in `RecordSink.save` and `db.Database.setup` |
 | Dates on the screen "Fri, 10/9/2026" (birthdays without the day), still dates in the table so headings sort by date; the found-set CSV and tag exports keep their own formats | `find.shown`, `find.date_columns`, `ui._date_column_config`; `find.found_set_csv`; `tags.export_table` |
 
 ## Why it is built this way
@@ -175,6 +179,7 @@ database. Without PostgreSQL those tests are skipped with a message; the convert
 | `test_records_find_edges.py` | the cases the independent test found: accented letters (ICU and C-locale databases), business ID vs names, times in dates, today's time zone, `+1 516*`, no-year birthdays, apostrophes and punctuation, backward ranges, `#12`; 1.1.0 and 1.2.0 reviews (the date-only last visit, whole names in First name) |
 | `test_records_star_equals.py` | `*` alone finds the records with a value and `=` alone the blank ones, for every field a find can search (also unreadable values); with other text they keep their meanings; an Omit keeps the records whose field is blank, for every field made NULL-safe without COALESCE |
 | `test_records_date.py` | the Date (last visit or last call, the later), days of the week alone, in lists and ranges, with a date, in Omit requests and other dates (Record created on the app's clock, no-year birthdays), messages, the found set's Date column, sort and CSV, dates on the screen vs in tag exports, the Find layout, the Date index (replaced when it changes), and that finds and the Date sort use indexes |
+| `test_records_gender.py` | what a file's gender cell becomes, guesses on import (titles, whole names, accents, hyphens, the email, ambiguous names, a file's other answer), guesses never over F / M, finding by gender, no gender in exports, guesses for records stored before and after a new name table, the name table |
 | `test_records_tags.py` | export format, one row per number, merge rules, consent blank, no-number records, creation date per import, file name, parity on the sample files |
 | `test_records_store.py` | businesses (IDs, corrections cascade), services, tags (one business, names, history), setup (repeatable, new fields, retyped fields, field names, a last visit from 1.1.0 converted to a date) |
 | `test_records_app.py` | the real app.py with AppTest: database errors, Businesses/Services, New import with business and service, import page, Find (the shown boxes, Add a field and ✕, `*` and `=` alone, a day of the week in Date and the Date column, pickers, an Omit request, blank find, errors, omit selected), tag creation, tag export, Fields |
