@@ -4,6 +4,29 @@ What changed in each version of Customer Records. The running version is shown i
 is tagged in git (`vX.Y.Z`). The history of the file converter this project is based on is in
 [converter/CHANGELOG.md](converter/CHANGELOG.md).
 
+## 1.5.0 — five imports at once, and the shared server
+
+- **Five imports run at the same time** (`IMPORT_WORKERS`, now 5 by default), everyone's together; more wait as
+  *Queued* and start by themselves. Each import now runs in its own worker process, so imports really run side by
+  side, one per processor core. Before, they took turns inside the app: five started together all finished at about
+  the time five in a row would have. Each import takes about 1.5 seconds longer to start. The records stored are
+  exactly the same.
+- If the server runs out of memory during an import, only that import fails, and it says so (*stopped by the
+  system*); the others carry on. An import that can't reach the database says why at once. Cancel works as before.
+- **Stopping or updating the server stops its imports** within seconds: those running or waiting show
+  *Interrupted*, with nothing stored, and are started again with *Re-run*. Before, the server first finished all of
+  them, running and waiting, with the pages already gone.
+- **The server setup has logins**: the Docker setup always asks everyone to sign in with their own account (accounts
+  on Setup → Users), and imports, tags, businesses and services show who made them (Businesses and Services have a
+  new *Added by* column). A deleted account is signed out at its next click, and a changed admin right applies at
+  once. On one computer there is still no login.
+- **The server setup is reachable through HTTPS only**: `docker-compose.yml` publishes the app on the server itself
+  (`127.0.0.1:8502`), for Caddy to serve. `.env.example` no longer ships an admin password (`change-me-now` was
+  known to everyone with the code): set `ADMIN_PASSWORD` before the server's first start.
+- The README's *On a server* section has the steps for one shared copy and the server size (4 cores and 8 GB at the
+  least; 6 cores and 16 GB recommended for five imports at once).
+- New setting `DATABASE_POOL_SIZE` (16): the most database connections the app opens for the pages (was 8, fixed).
+
 ## 1.4.0 — gender
 
 - **Gender**, a new record field: `F` or `M` when the file says so (a column whose header says gender or sex, not
