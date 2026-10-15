@@ -180,6 +180,7 @@ def test_nothing_is_required_a_blank_find_shows_every_record(env):
     [found] = [d for d in at.dataframe if F.ID_COL in d.value.columns]
     assert len(found.value) == 2 and str(found.value["Created"].dtype).startswith("datetime64")
     config = json.loads(found.proto.columns)       # shown as "Thu, 10/15/2026 10:48 AM", sorted as a date-time
+    assert found.proto.placeholder == ""            # an empty value shows nothing (not "None")
     assert config["Created"]["type_config"]["format"] == "ddd, M/D/YYYY h:mm A"
 
 
@@ -262,6 +263,7 @@ def test_a_day_of_the_week_in_the_date_box(env):
     """Date "fri" finds the Fridays (John: Thu 10/1, Ann: Fri 10/2); the found set shows the Date with its day."""
     at = run_page("Find")
     assert "Fri" in by_label(at.text_input, "Date").placeholder
+    assert "the later of the two" in by_label(at.text_input, "Date").help     # the field's own help is kept
     by_label(at.text_input, "Date").input("fri")
     button(at, "Find").click().run()
     assert [m.value for m in at.metric][0] == "1"
@@ -269,6 +271,18 @@ def test_a_day_of_the_week_in_the_date_box(env):
     assert list(table["Date"]) == [date(2026, 10, 2)]                                   # a date, sorted as one
     assert json.loads(at.dataframe[0].proto.columns)["Date"]["type_config"]["format"] == "ddd, M/D/YYYY"
     assert at.selectbox(key="found_sort").options[3] == "Date (newest first)"
+
+
+def test_gender_from_the_add_a_field_menu(env):
+    """John and Ann (no Gender column) were guessed Mb and Fb on import; Gender f finds Ann."""
+    at = run_page("Find")
+    at.button(key="fq_1_1_add_f:gender").click().run()
+    box = by_label(at.text_input, "Gender")
+    assert box.placeholder == "F, M, Fb or Mb" and "likely" in box.help
+    box.input("f")
+    button(at, "Find").click().run()
+    assert [m.value for m in at.metric][0] == "1"
+    assert list(at.dataframe[0].value["Gender"]) == ["Fb"]
 
 
 def test_omit_selected_and_show_omitted(env):
