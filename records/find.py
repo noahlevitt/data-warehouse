@@ -38,7 +38,7 @@ from converter.output import neutralise_formula
 from converter.schema import TargetSchema
 
 from .criteria import FALSE, TRUE, CriterionError, Params, condition
-from .db import Database, column_type, date_expr, date_fields
+from .db import Database, column_type, date_expr, date_fields, date_only
 from .fields import FindField
 
 # A found-set node: {"t": "find", "requests": [...]}, {"t": "and"|"or", "parts": [n, n]}, {"t": "not", "part": n},
@@ -281,23 +281,61 @@ def found_set_csv(db: Database, schema: TargetSchema, cond: sql.Composable, para
 ID_COL = "Record ID"
 # The found-set table's Date column, chosen like a field (by this key) and shown with its day of the week.
 DATE_COL = "Date"
+# How the found-set table shows dates (momentJS formats for st.column_config; the values stay dates, so a column
+# sorts by date): the day of the week first, "Fri, 10/9/2026" and "Fri, 10/9/2026 3:45 PM" (decided 2026-10-15).
+# Birthdays and anniversaries have no day of the week (often no year either: 1600). Tag exports and the found-set
+# CSV keep the import format's dates (MM/DD/YYYY…): this is only how the screen shows them.
+DAY_FORMAT = "ddd, M/D/YYYY"
+DAY_TIME_FORMAT = "ddd, M/D/YYYY h:mm A"
+NO_DAY_FORMAT = "M/D/YYYY"
+
+
+def shown(v, weekday: bool = True) -> str:
+    """A record value as the screen shows it: dates as "Fri, 10/9/2026", date-times as "Fri, 10/9/2026 3:45 PM"
+    (without the day of the week when ``weekday`` is False: birthdays), anything else as text."""
+    if v is None:
+        return ""
+    if isinstance(v, datetime):
+        text = f"{v.month}/{v.day}/{v.year} {v.hour % 12 or 12}:{v.minute:02d} {'AM' if v.hour < 12 else 'PM'}"
+    elif isinstance(v, date):
+        text = f"{v.month}/{v.day}/{v.year}"
+    else:
+        return str(v)
+    return f"{v:%a}, {text}" if weekday else text
+
+
+def date_columns(schema: TargetSchema, show: list[str]) -> dict[str, tuple[str, str]]:
+    """The date columns of the found-set table (:func:`page_frame` with these chosen fields): {column: ("date" or
+    "datetime", momentJS format)}, for the page's column_config."""
+    out = {"Created": ("datetime", DAY_TIME_FORMAT)}
+    by_name = {f.name: f for f in schema.fields}
+    for k in show:
+        if k == DATE:
+            out[DATE_COL] = ("date", DAY_FORMAT)
+        elif (f := by_name.get(k)) is not None and f.type in ("date", "datetime"):
+            day = f.type == "date" or date_only(f)
+            out[f.header] = ("date" if day else "datetime",
+                             NO_DAY_FORMAT if f.no_year_value is not None else DAY_FORMAT if day else DAY_TIME_FORMAT)
+    return out
 
 
 def page_frame(rows: list[dict], schema: TargetSchema, show: list[str],
                timezone: str = "America/New_York") -> pd.DataFrame:
     """The found-set page as a table for the screen: fixed columns first, then the chosen fields (by name; DATE is
-    the Date, shown with its day of the week: "10/09/2026 Fri")."""
+    the Date). Dates and date-times stay values (Record created on the app's clock), shown as :func:`date_columns`
+    says; everything else is text."""
     heads = {f.name: f.header for f in schema.fields}
+    dated = {f.name for f in schema.fields if f.type in ("date", "datetime")}
 
-    def value(r: dict, k: str) -> str:
+    def value(r: dict, k: str):
         if k == DATE:
-            d = r.get("activity_date")
-            return f"{_cell(d)} {day_name(d)}".strip()
-        return _cell(r.get(k))
+            return r.get("activity_date")
+        return r.get(k) if k in dated else _cell(r.get(k))
 
     heads[DATE] = DATE_COL
+    zone = ZoneInfo(timezone)
     table = pd.DataFrame([{
-        ID_COL: r["id"], "Created": _cell(r["created_at"], timezone),
+        ID_COL: r["id"], "Created": r["created_at"].astimezone(zone).replace(tzinfo=None),
         "Business": f"{r['business_id']} · {r['business_name']}", "Service": r["service_name"],
         "Phones": r["phones"] or "",
         **{heads[k]: value(r, k) for k in show if k in heads and (k in r or k == DATE)},
