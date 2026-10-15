@@ -6,7 +6,7 @@ find requests, collected into **tags**, and a tag exports its unique phone numbe
 format, ready to import into the main system.
 
 Built on the file converter (file-converter 0.21.2): files are read, matched and cleaned by the same engine, with the
-same rules. **Version 1.0.0 — prototype.**
+same rules. **Prototype**; the version is in the app's menu and in [docs/CHANGELOG.md](docs/CHANGELOG.md).
 
 **Quick start (Mac):**
 
@@ -17,7 +17,7 @@ brew services start postgresql@17
 ```
 
 Then open http://localhost:8502 (port 8502, so the file converter can keep running on 8501). The app creates its
-database on first start. There is no login for now.
+database on first start. On one computer there is no login; the server setup has one (*On a server*).
 **Tests:** `.venv/bin/python -m pytest -q` (PostgreSQL must be installed; the tests start their own server).
 
 ## Documentation
@@ -244,11 +244,40 @@ changed.
 
 ### On a server (for the team)
 
-Docker: `cp .env.example .env` (set `POSTGRES_PASSWORD`, optionally `ANTHROPIC_API_KEY`), `mkdir -p data && sudo
-chown 1000 data`, `docker compose up -d --build`. Put it behind HTTPS (Caddy) or a VPN, and turn logins on
-(`AUTH_MODE=password`): the records hold customers' phone numbers. See
-[docs/converter/OPERATIONS.md](docs/converter/OPERATIONS.md) for Caddy, users and troubleshooting; this app's port
-is 8502 where that document says 8501 (e.g. `reverse_proxy localhost:8502`).
+One shared copy that everyone opens in the browser: the same records, tags and imports for all, and up to five
+imports converting at the same time (`IMPORT_WORKERS`, each in its own worker process).
+
+1. A Linux server with Docker (size below), and a name for it (e.g. `records.example.com`) pointing at it. Get the
+   code onto it (`git clone`, or the bundle).
+2. `cp .env.example .env`, then set `POSTGRES_PASSWORD` (long and random), `ADMIN_PASSWORD` (8+ characters, for the
+   first admin, `admin`; don't leave it empty on a server, or whoever opens the app first creates the admin) and
+   optionally `ANTHROPIC_API_KEY`.
+3. `mkdir -p data && sudo chown 1000 data`, then `docker compose up -d --build`. The app is then reachable on the
+   server itself only (`127.0.0.1:8502`).
+4. Give it an HTTPS address with Caddy on the server, which gets the certificate by itself: in its `Caddyfile`,
+   `records.example.com { reverse_proxy localhost:8502 }`; open ports 80 and 443 in the firewall. Over a VPN
+   instead: change the line under `ports:` in `docker-compose.yml` to `"8502:8502"` and allow only the VPN to reach
+   the server (Docker's published ports bypass `ufw`). Caddy, backups and troubleshooting are in
+   [docs/converter/OPERATIONS.md](docs/converter/OPERATIONS.md), written for the file converter: where it differs
+   from this README (port 8501, server size, logins off), this README is right.
+5. Sign in as `admin`, delete `ADMIN_PASSWORD` from `.env`, and add an account for each person on **Setup → Users**.
+
+Logins are always on in the Docker setup (`docker-compose.yml` sets `AUTH_MODE=password`, whatever `.env` says):
+each person signs in with their own account, and imports, tags, businesses and services show who made them. A
+deleted account is signed out at its next click. Stopping or updating the server stops the imports running or
+waiting at that moment: they show *Interrupted*, with nothing stored, and are started again with *Re-run*.
+
+Server size for 5–20 people with five imports at once:
+
+| | Minimum | Recommended |
+|---|---|---|
+| CPU | 4 cores (five imports share them, each takes longer) | 6 cores (each import its own core, plus PostgreSQL and the pages) |
+| Memory | 8 GB | 16 GB |
+| Disk | 40 GB SSD | 100 GB SSD |
+
+What it is based on (measured, 1.5.0): a running import uses about one core and 0.4 GB of memory per 20,000 rows
+(1 GB per 100,000) until it ends; PostgreSQL keeps about 2 KB per record with its indexes (200 MB per 100,000
+records); each import's files are kept 30 days (`FILE_RETENTION_DAYS`). With less memory, lower `IMPORT_WORKERS`.
 
 ### Backups
 
@@ -266,7 +295,7 @@ is 8502 where that document says 8501 (e.g. `reverse_proxy localhost:8502`).
 | `data/imports/<id>/` | each import's original file and side-by-side data; **deleted after `FILE_RETENTION_DAYS` (30)** — the records stay |
 
 The records hold customers' phone numbers, names, emails and addresses: keep the database on an encrypted disk and
-the app on a trusted network, and turn logins on for a shared server.
+the app on a trusted network (the server setup has logins on).
 
 ## Settings (`.env`)
 
@@ -278,12 +307,15 @@ Customer Records' own:
 | `POSTGRES_PASSWORD` | — | Docker only: the database password docker-compose uses |
 | `RECORDS_SCHEMA_PATH` | `schemas/records_schema.yaml` | the record fields |
 | `EXPORT_SCHEMA_PATH` | `SCHEMA_PATH` (`schemas/target_schema.yaml`) | the format tags export into |
+| `IMPORT_WORKERS` | 5 | imports that run at the same time, each in its own worker process; more wait as *queued* (the converter alone defaults to 2) |
+| `DATABASE_POOL_SIZE` | 16 | the most PostgreSQL connections the app opens for the pages; each running import uses up to 2 more |
+| `AUTH_MODE` | `none` | `password`: everyone signs in (accounts on the Users page). Docker always uses `password` |
 | `DEFAULT_PAGE` | `new` | first page: `new`, `imports` or `find` |
 | `APP_TITLE` | Customer Records | browser tab title |
 | `PORT` | 8502 | `run_local.sh` only: the port (the file converter keeps 8501); not read from `.env` |
 
-The converter's settings work as before (`ANTHROPIC_API_KEY`, `AI_*`, `MAPPING_MODEL`, `IMPORT_WORKERS`,
-`FILE_RETENTION_DAYS`, `APP_TIMEZONE`, `AUTH_MODE`, `ADMIN_*`, `DATA_DIR`): see
+The converter's other settings work as before (`ANTHROPIC_API_KEY`, `AI_*`, `MAPPING_MODEL`,
+`FILE_RETENTION_DAYS`, `APP_TIMEZONE`, `ADMIN_*`, `DATA_DIR`): see
 [docs/converter/README.md](docs/converter/README.md) → Settings. `NUMBER_RECORD_DAYS` has no effect here (the
 converter's number history isn't used; the records are the history).
 
