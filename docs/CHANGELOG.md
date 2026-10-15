@@ -4,6 +4,15 @@ What changed in each version of Customer Records. The running version is shown i
 is tagged in git (`vX.Y.Z`). The history of the file converter this project is based on is in
 [converter/CHANGELOG.md](converter/CHANGELOG.md).
 
+## 1.3.1 — dates shown with their day of the week
+
+- **Dates on the Find page show their day of the week**: `Fri, 10/9/2026`, and `Fri, 10/9/2026 3:45 PM` for those
+  with a time (Record created, Last call…), in the found set and in one record's details. Birthdays and anniversaries
+  are shown without it (`9/12/1985`; often there is no year). The found set's date columns are real dates now, so a
+  click on a column heading sorts them by date (it sorted them as text).
+- **Tag exports are unchanged**: dates in the main system's import format (`10/09/2026 12:00 AM`). The found-set
+  CSV also keeps `10/09/2026` (Excel reads it as a date), with the Date's day in its own column.
+
 ## 1.3.0 — one Date, and days of the week
 
 - **Date** replaces Last visit / order on the Find page: one field for a record's last visit and, from a call log,
