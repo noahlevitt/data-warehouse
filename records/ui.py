@@ -34,7 +34,7 @@ from converter.schema import TargetSchema
 
 from . import find as F
 from .criteria import SYNTAX
-from .db import Database
+from .db import Database, date_fields
 from .fields import PICKER_KEYS, FindField, find_fields
 from .store import RecordStore, StoreError
 from .tags import export_file, export_filename, export_table
@@ -42,7 +42,7 @@ from .tags import export_file, export_filename, export_table
 ss = st.session_state
 
 # Fields shown in the found-set table unless the person picks others.
-DEFAULT_SHOW = ["first_name", "last_name", "email", "city", "state", "transactions_last", "birthday",
+DEFAULT_SHOW = [F.DATE, "first_name", "last_name", "email", "city", "state", "birthday",
                 "total_visits", "total_spent"]
 
 
@@ -88,11 +88,12 @@ def go_find(ctx: Ctx, node: dict, note: str) -> None:
 # ---------------------------------------------------------------------------------------------------- Find
 
 # Example shown in an empty box, by kind of field (records.criteria has the whole syntax).
-PLACEHOLDER = {"date": "e.g. 1/1/2026...1/20/2026", "created": "e.g. 10/14/2026 or 10/1/2026...",
+PLACEHOLDER = {"date": "e.g. 1/1/2026...1/20/2026 or Fri", "created": "e.g. 10/14/2026 or 10/1/2026...",
                "number": "e.g. >5 or 10...20", "phone": "e.g. 516 555 0100", "bool": "yes / no"}
 TIP = {"text": "A word it starts with (smith), =smith for the whole word, \"main st\" anywhere, = empty, * any.",
        "date": "10/9/2026 · 10/2026 · 2026 · 1/1/2026...1/20/2026 · ...1/1/2026 up to that day · 1/1/2025... from "
-               "that day on · <, <=, >, >= · = empty · * any",
+               "that day on · <, <=, >, >= · Fri or Friday (every Friday) · sat sun · mon...fri · fri 10/2026 (the "
+               "Fridays of that month) · = empty · * any",
        "number": "5 · >5 · <=100 · 10...20 · ...20 up to 20 · 10... 10 or more · = empty · * any",
        "phone": "Any formatting; part of a number (5550100) or its start (516*); = no usable number; * has one.",
        "bool": "yes or no; = empty; * any value"}
@@ -109,20 +110,25 @@ MENU_COLUMNS = [["Name, contact & address"], ["Visits & spend", "Columns of the 
 class FindLayout:
     """Which boxes a request shows (from the record fields, so a changed records_schema.yaml still works)."""
 
-    main: list[FindField]                 # next to Business and Services: the last visit
+    main: list[FindField]                 # next to Business and Services: the Date
     second: list[FindField]               # the row below: phone, first name, last name
     groups: dict[str, list[FindField]]    # the Add a field menu, by group
     columns: list[FindField]              # the files' own columns (Column: …), picked from a list in the menu
 
 
 def find_layout(schema: TargetSchema, fields: list[FindField]) -> FindLayout:
-    """The Find page's layout: the most used fields always shown, the others one click away (Add a field)."""
+    """The Find page's layout: the most used fields always shown, the others one click away (Add a field).
+
+    The Date (the later of the last visit and last call) is shown instead of those two fields, which are then not
+    in the menu either (they stay in the records, the found set's columns and the exports).
+    """
     by_key = {f.key: f for f in fields}
-    last_visit = next((f"f:{f.name}" for f in schema.fields if f.generic_date == "default"), None)
     phone = next((f"f:{f.name}" for f in schema.fields if f.type == "phone"), None)
-    main = [by_key[k] for k in [last_visit] if k in by_key]
+    main = [by_key[k] for k in ["date"] if k in by_key]
     second = [by_key[k] for k in [phone, "f:first_name", "f:last_name"] if k in by_key]
     shown = {f.key for f in main + second} | PICKER_KEYS
+    if main:
+        shown |= {f"f:{f.name}" for f in date_fields(schema)}
     groups: dict[str, list[FindField]] = {"Name, contact & address": [], "Visits & spend": [], "Dates": [],
                                           "Other": []}
     for f in fields:
@@ -163,7 +169,7 @@ def _box(where, f: FindField, key: str) -> str:
 def page_find(ctx: Ctx) -> None:
     """Page "Find": find requests (FileMaker style), the found set, its records, and adding it to a tag.
 
-    Each request shows what is searched most: Business, Services and Last visit, then Phone, First name and Last
+    Each request shows what is searched most: Business, Services and Date, then Phone, First name and Last
     name; every other field is added to a request from its **＋ Add a field** menu (and taken off with ✕). The
     requests are one form: typing doesn't rerun the page, and Enter in any box is the Find button (the form's first
     button); the menu's buttons submit the form too, so what is typed is kept. Nothing is required; a Find with
@@ -214,7 +220,7 @@ def page_find(ctx: Ctx) -> None:
                 req["omit"] = kind == "Omit"
                 if len(ss.find_reqs) > 1 and h3.form_submit_button("Remove", key=f"{rkey}_rm", width="stretch"):
                     remove = req["id"]
-                c1, c2, c3 = st.columns([2.2, 2.2, 1.6], vertical_alignment="bottom")
+                c1, c2, c3 = st.columns(3, vertical_alignment="bottom")
                 biz = c1.multiselect(
                     "Business", [x["id"] for x in businesses], key=f"{rkey}_biz",
                     format_func=lambda i: next((_biz_label(x) for x in businesses if x["id"] == i), i),
@@ -371,7 +377,8 @@ def _found_set(ctx: Ctx, fields: list[FindField], businesses: list[dict]) -> Non
             st.rerun()
         return
 
-    names = {f.name: f.header for f in ctx.schema.fields if f.type != "phone"}
+    names = ({F.DATE: F.DATE_COL} if any(f.key == "date" for f in fields) else {}) | {
+        f.name: f.header for f in ctx.schema.fields if f.type != "phone"}
     o1, o2, o3, o4 = st.columns([2.2, 1.6, 1, 1.2], vertical_alignment="bottom")
     show = o1.multiselect("Columns", list(names), default=[n for n in DEFAULT_SHOW if n in names],
                           format_func=lambda n: names[n], key="found_cols")
@@ -428,8 +435,11 @@ def _record_detail(ctx: Ctx, record_id: int) -> None:
                     + (f", sheet {rec['sheet']}" if rec.get("sheet") else "") + f"), row {rec['file_row']}")
         c1, c2 = st.columns(2)
         with c1:
-            vals = [{"Field": f.header, "Value": _show_value(rec.get(f.name))} for f in ctx.schema.fields
-                    if f.type != "phone"]
+            day = F.record_date(ctx.schema, rec)
+            vals = ([{"Field": F.DATE_COL, "Value": f"{_show_value(day)} {F.day_name(day)}".strip()}]
+                    if date_fields(ctx.schema) else [])
+            vals += [{"Field": f.header, "Value": _show_value(rec.get(f.name))} for f in ctx.schema.fields
+                     if f.type != "phone"]
             st.dataframe(pd.DataFrame(vals), hide_index=True, width="stretch")
         with c2:
             if rec["phones"]:
