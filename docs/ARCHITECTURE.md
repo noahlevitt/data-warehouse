@@ -27,8 +27,8 @@ connected to the main system. The conversion engine it is built on is described 
    review mapping
  Start import ────────────────────────────────────►  records.store.create_import (PostgreSQL, status queued)
                                                       converter Store.create_import (SQLite job, read_options
-                                                        carry records_import_id) → ImportRunner.submit
- background ──────────────────────────────────────►  converter.jobs.run_import → engine.convert (record fields)
+                                                        carry records_import_id) → records.runner submit
+ worker process (one per running import) ─────────►  converter.jobs.run_import → engine.convert (record fields)
                                                       → audit/source parquet (side by side)
                                                       → records.importer.RecordSink.save: group the engine's
                                                         rows per file row, type the values, COPY into records
@@ -54,7 +54,7 @@ job's `read_options` has `records_import_id`. See KNOWN_ISSUES #1 for what that 
 
 | Module | Responsibility |
 |---|---|
-| `config.py` | `DATABASE_URL`, `RECORDS_SCHEMA_PATH`, `EXPORT_SCHEMA_PATH` (`.env` is loaded by `converter.config`). |
+| `config.py` | `DATABASE_URL`, `RECORDS_SCHEMA_PATH`, `EXPORT_SCHEMA_PATH`, `IMPORT_WORKERS` (5 here; the converter's default is 2), `DATABASE_POOL_SIZE` (16) (`.env` is loaded by `converter.config`). |
 | `db.py` | Connection pool (psycopg 3 + psycopg_pool); `ensure_database` (creates the database when allowed, with ICU case rules so Å = å); `Database.setup`: `pg_trgm`, the fixed tables, one column per record field (added when missing; a retyped field only warns, except a date-and-time field made `date_only`, converted to a date), indexes (trigram for text and the split parts of whole names, b-tree for the rest and for the Date expression), and `collation` (None when the database folds accented letters; otherwise an explicit collation for finds, `_case_collation`); `check_fields` (names must be valid columns, one phone field); `date_fields` / `date_expr` (the Date: the later of the last visit and last call, as a day). |
 | `store.py` | `RecordStore`: businesses, services, imports, records, tags; the rules of one business per tag, unique names, deletions only when unused, tag history. All SQL except finds and exports. |
 | `importer.py` | `RecordSink` (the runner's sink): `build_records` (engine audit → one record per file row, typed values, all numbers, the row as written minus skipped columns), `save` (one transaction: COPY records and numbers, complete the import), `discard`; `creation_fallback` (see Tag export). |
@@ -62,13 +62,15 @@ job's `read_options` has `records_import_id`. See KNOWN_ISSUES #1 for what that 
 | `criteria.py` | One criterion → one SQL condition, per kind of field (text, phone, number, date, true/false, business, …), FileMaker syntax; values always as parameters; every condition `COALESCE(…, false)`. The module docstring is the syntax reference (also shown on the page). |
 | `find.py` | Requests (businesses, services, criteria; all optional) → found-set nodes (find, constrain, extend, omit records, show omitted, all, tag) → one SQL condition; counts, pages (sorts, the Date as `activity_date`), CSV (with Date and Day), `record_date` / `day_name`; how the screen shows dates (`shown`, `date_columns`, `DAY_FORMAT`: "Fri, 10/9/2026"). |
 | `gender.py` | Gender: `stated` (a file's Female, Woman, F - Female, ♀… → F / M), `unknown` (Unknown, N/A, codes, Dr), `other_answer`, `guess` (one SQL UPDATE: no guess for two people; Fb / Mb from a title, the first name in `first_names` (≥ 90% of one sex, ≥ 10 people; accents off, also in C-locale databases; a hyphenated name's first part) or the email's first word; never over F / M or a file's other answer); `read_stored_files` (upgrading: what the stored rows' Gender column said, in the column `header_column` picks as the rules would); `load_names` / `names_version` (the shipped `names/first_names.csv.gz`, built by `scripts/names/build_first_names.py` from US SSA baby names 1930–2017, CC0). |
+| `runner.py` | `ProcessImportRunner` (1.5.0): the converter's `ImportRunner` (slots, queue, cancel flag, "interrupted" at start-up, purge) with each import run in a new worker process, `python -m records.runner <job database> <job id> <server pid>` (started with `subprocess` in its own process group; `multiprocessing` would run app.py again in each one). The process first connects to PostgreSQL (failing the import with PostgreSQL's reason if it can't), runs `converter.jobs.run_import` with its own `RecordSink` and up to two PostgreSQL connections, and exits. A process that ends without an outcome fails its import with the reason (`exit_reason`: signal 9 = out of memory) and `RecordSink.discard` runs. When the server shuts down (`server_stopping`: a `threading._register_atexit` hook, which runs before Python joins the slots' threads), running worker processes are terminated and their imports, and the queued ones, end *interrupted* with what they stored removed. A new runner removes what imports left running by the previous server stored. A process whose server is gone exits within a second (`_stop_with_server`, macOS and Linux). |
 | `tags.py` | A tag's export: one row per unique number, filled by name from the record fields with the merge rules, written with the converter's writer; the file name. |
 | `ui.py` | The Find, Tags, Businesses and Services pages (Streamlit), given a `Ctx` by `app.py`. |
 
 `app.py` is the converter's app with Customer Records' changes: the business/service step and the duplicate-file
 warning on New import, `start_import` / `rerun_import` registering imports in PostgreSQL, `can_rerun` (no re-run while
 records are stored), business/service/records on the Imports pages, *Delete this import's records*, the Fields page,
-the navigation (Number history not shown), the sidebar, and both mapping tables drawn at full height
+the account check after sign-in (1.5.0: a deleted account is signed out, a changed admin right applies at once), the
+navigation (Number history not shown), the sidebar, and both mapping tables drawn at full height
 (`height="content"`, 1.0.2: they get a new key on every edit, so a table scrolled inside itself jumped back to
 its first row).
 
@@ -180,8 +182,10 @@ database. Without PostgreSQL those tests are skipped with a message; the convert
 | `test_records_star_equals.py` | `*` alone finds the records with a value and `=` alone the blank ones, for every field a find can search (also unreadable values); with other text they keep their meanings; an Omit keeps the records whose field is blank, for every field made NULL-safe without COALESCE |
 | `test_records_date.py` | the Date (last visit or last call, the later), days of the week alone, in lists and ranges, with a date, in Omit requests and other dates (Record created on the app's clock, no-year birthdays), messages, the found set's Date column, sort and CSV, dates on the screen vs in tag exports, the Find layout, the Date index (replaced when it changes), and that finds and the Date sort use indexes |
 | `test_records_gender.py` | what a file's gender cell becomes, guesses on import (titles, whole names, accents, hyphens, the email, ambiguous names, a file's other answer), guesses never over F / M, finding by gender, no gender in exports, guesses for records stored before and after a new name table, the name table |
+| `test_records_runner.py` | imports in worker processes (1.5.0): several at once up to `IMPORT_WORKERS`, the same records as an import run in the server, cancel, a worker killed (signal 9), ending without a result or not starting, Ctrl+C left to the server, a worker stopping when its server is gone, stopping the server (running and queued imports interrupted, also in a real server process), a new start removing what interrupted imports stored, no database, a relative data folder, the settings |
+| `test_server_setup.py` | the Docker setup: logins always on, the port published on the server itself only, no admin password shipped, five imports at once |
 | `test_records_tags.py` | export format, one row per number, merge rules, consent blank, no-number records, creation date per import, file name, parity on the sample files |
 | `test_records_store.py` | businesses (IDs, corrections cascade), services, tags (one business, names, history), setup (repeatable, new fields, retyped fields, field names, a last visit from 1.1.0 converted to a date) |
-| `test_records_app.py` | the real app.py with AppTest: database errors, Businesses/Services, New import with business and service, import page, Find (the shown boxes, Add a field and ✕, `*` and `=` alone, a day of the week in Date and the Date column, pickers, an Omit request, blank find, errors, omit selected), tag creation, tag export, Fields |
+| `test_records_app.py` | the real app.py with AppTest: database errors, Businesses/Services, New import with business and service, import page, Find (the shown boxes, Add a field and ✕, `*` and `=` alone, a day of the week in Date and the Date column, pickers, an Omit request, blank find, errors, omit selected), tag creation, tag export, Fields, logins (sign-in, who added a business, Users for admins only, a deleted account signed out) |
 
 Checks before a release: [HANDOFF.md](HANDOFF.md) → Checks.
