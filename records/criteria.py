@@ -4,10 +4,12 @@ Overview
 --------
 The syntax follows FileMaker, which the team knows; it is written out for people in :data:`SYNTAX` (shown under
 "How to search" on the Find page; the README has the same as a table), with FileMaker's differences marked ≠.
-Every condition is wrapped in ``COALESCE(..., false)``, so an empty value never makes a request "unknown" (that
-would break Omit). Values are passed as query parameters (:class:`Params`), never pasted into the SQL. Upper and
-lower case never matter, also for accented letters (Åberg, MÓR): the database's own setting is used when it handles
-them, otherwise an explicit collation (records.db.Database.setup picks it).
+No condition is ever "unknown" (NULL) for an empty value, which would break Omit: a text, number or date criterion
+on a column (or the Date, Any field, and each part of First / Last name) is joined with ``value IS NOT NULL`` (its
+condition is NULL exactly when the value is, so this is the same as false for empty values, and the value's index
+can be used); every other condition is wrapped in ``COALESCE(..., false)`` (:func:`condition`). Values are passed as query parameters (:class:`Params`), never
+pasted into the SQL. Upper and lower case never matter, also for accented letters (Åberg, MÓR): the database's own
+setting is used when it handles them, otherwise an explicit collation (records.db.Database.setup picks it).
 
 Nothing is ever required: a field left blank isn't searched (records.find ignores blank requests). Before reading a
 criterion, ``…`` (one character, as phones and Macs type it) and ``..`` become the range operator ``...``; four or
@@ -68,9 +70,14 @@ Add a field) searches first and last together: `lisa ray`.
 - `5` · `>5` · `<=100` · `10...20` (both included) · `...20` (20 or less) · `10...` (10 or more)
 - `$1,200.50` and `#12` are fine · `=` empty · `*` any value
 
-**Dates** (last visit and the other activity dates, first visit, birthday, anniversary, Record created). The last
-visit is a date only: type days, never times.
+**Dates** (Date, the other activity dates, first visit, birthday, anniversary, Record created). **Date** is the
+last visit or, in a call log, the last call (the later of the two when a record has both); it is a day: type days,
+never times.
 - `10/9/2026` — that day · `10/2026` — that month · `2026` — that year · `//` — today
+- `Fri` or `Friday` — every Friday · `sat sun` or `sat/sun` — Saturdays and Sundays · `mon...fri` or `mon-fri` —
+  Monday through Friday · with a date: `fri 10/2026` — the Fridays of October 2026, `sat sun 1/1/2026...3/31/2026` —
+  the weekends in that range, `fri >10/1/2026` — the Fridays after October 1 (a day of the week can't be one end of
+  a range or follow `<` `>`; birthdays and anniversaries without a year never match a day of the week)
 - `1/1/2025...1/1/2026` — from the first day through the last (both included)
 - `...1/1/2026` — up to and including that day · `1/1/2025...` — from that day on (also `...2025`, `10/2026...`)
 - `<10/1/2026` before · `<=10/1/2026` up to and including · `>` after · `>=` on or after
@@ -139,8 +146,9 @@ def name_condition(part: str, text: str, p: "Params") -> sql.Composable:
     t = text.strip()
     if t in ("=", "*"):
         return text_condition(stored, t, p)
-    return sql.SQL("({} OR {})").format(_coalesce(text_condition(stored, t, p)),
-                                        _coalesce(text_condition(name_expr(part), t, p)))
+    split = name_expr(part)
+    return sql.SQL("({} OR {})").format(_guard(text_condition(stored, t, p), stored),
+                                        _guard(text_condition(split, t, p), split))
 
 
 TRUE = sql.SQL("true")
@@ -151,6 +159,17 @@ _UNSUPPORTED = {"!": "duplicates (!)", "?": "invalid values (?)", "~": "relaxed 
 MONTHS = {m.lower(): i for i, m in enumerate(calendar.month_name) if m}
 MONTHS.update({m.lower(): i for i, m in enumerate(calendar.month_abbr) if m})
 MONTHS["sept"] = 9
+# Days of the week (ISO numbers: Monday 1 … Sunday 7), as typed in a date criterion: the name, its first three
+# letters, the plural ("fridays") and a few common short forms.
+_DAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+WEEKDAYS = {w: i for i, n in enumerate(_DAY_NAMES, start=1) for w in (n, n + "s", n[:3])}
+WEEKDAYS.update({"tues": 2, "weds": 3, "thur": 4, "thurs": 4})
+
+
+def _guard(cond: sql.Composable, value: sql.Composable) -> sql.Composable:
+    """``cond AND value IS NOT NULL``: false instead of NULL when ``value`` is empty, for a condition that is NULL
+    exactly when ``value`` is (the same as :func:`_coalesce`, but the value's index can still be used)."""
+    return sql.SQL("({} AND {} IS NOT NULL)").format(cond, value)
 
 
 def _coalesce(cond: sql.Composable) -> sql.Composable:
@@ -346,23 +365,28 @@ def number_condition(expr: sql.Composable, text: str, p: Params) -> sql.Composab
     """Condition for a number expression (see "Numbers" in the module docstring)."""
     t = text.strip()
     _check_supported(t)
+
+    def num(value: Decimal) -> sql.Placeholder:
+        # A whole number is passed as an integer: a decimal parameter would cast a whole-number column (visits,
+        # Record ID, file row) and leave its index unused. An amount column takes an integer as it is.
+        return p(int(value) if value == value.to_integral_value() else value)
     if t == "=":
         return sql.SQL("{} IS NULL").format(expr)
     if t == "*":
         return sql.SQL("{} IS NOT NULL").format(expr)
     for op in ("<=", ">=", "<", ">"):
         if t.startswith(op):
-            return sql.SQL("{} {} {}").format(expr, sql.SQL(op), p(_number(t[len(op):])))
+            return sql.SQL("{} {} {}").format(expr, sql.SQL(op), num(_number(t[len(op):])))
     if "..." in t:
         sa, sb = _range(t, "10...20")
         if not sb:
-            return sql.SQL("{} >= {}").format(expr, p(_number(sa)))
+            return sql.SQL("{} >= {}").format(expr, num(_number(sa)))
         if not sa:
-            return sql.SQL("{} <= {}").format(expr, p(_number(sb)))
+            return sql.SQL("{} <= {}").format(expr, num(_number(sb)))
         a, b = _number(sa), _number(sb)
         _backwards(a, b, t)
-        return sql.SQL("{} BETWEEN {} AND {}").format(expr, p(a), p(b))
-    return sql.SQL("{} = {}").format(expr, p(_number(t.lstrip("="))))
+        return sql.SQL("{} BETWEEN {} AND {}").format(expr, num(a), num(b))
+    return sql.SQL("{} = {}").format(expr, num(_number(t.lstrip("="))))
 
 
 @dataclass(frozen=True)
@@ -444,7 +468,7 @@ def date_token(text: str, today: date | None = None, with_time: bool = False) ->
     try:
         dt, has_time = dateparse.parse(s, today=today, convert_zones=False)
     except dateparse.DateError:
-        raise CriterionError(f"'{s}' isn't a date (try 10/9/2026, 10/2026, 2026 or 10/9).") from None
+        raise CriterionError(f"'{s}' isn't a date (try 10/9/2026, 10/2026, 2026, 10/9 or Fri).") from None
     if has_time and with_time:
         minute = dt.replace(second=0, microsecond=0)
         if not 1 <= minute.year <= 9998:
@@ -463,12 +487,56 @@ def _known_year(expr: sql.Composable, no_year: int | None, p: Params) -> sql.Com
     return sql.SQL("EXTRACT(YEAR FROM {}) <> {}").format(expr, p(no_year)) if no_year is not None else None
 
 
+def weekdays(text: str) -> tuple[set[int], str]:
+    """The days of the week named in a date criterion (ISO numbers, Monday 1) and the rest of the criterion.
+
+    ``fri``, ``Friday``, ``fridays``: Friday; several (``sat sun``, ``sat, sun``, ``sat/sun``, ``sat and sun``) are
+    any of them; ``mon...fri`` (also ``mon-fri``, ``mon to fri``) is Monday through Friday (``fri...mon`` goes over
+    the weekend). A day of the week as one end of a date range or after < > is refused (CriterionError). The rest
+    is a date criterion the days are combined with (``fri 10/2026``: the Fridays of October 2026); without days of
+    the week it is the text as typed.
+    """
+    days: set[int] = set()
+
+    def day_range(m: re.Match) -> str:
+        a, b = WEEKDAYS.get(m[1].lower()), WEEKDAYS.get(m[2].lower())
+        if a is None or b is None:
+            return m[0]
+        days.update((a - 1 + k) % 7 + 1 for k in range((b - a) % 7 + 1))
+        return " "
+
+    def one(m: re.Match) -> str:
+        d = WEEKDAYS.get(m[1].lower())
+        if d is None:
+            return m[0]
+        days.add(d)
+        return " "
+
+    # Ranges of days: mon...fri, also mon-fri, mon – fri, mon to fri, mon through fri.
+    rest = re.sub(r"\b([A-Za-z]+)\.?\s*(?:\.\.\.|-|–|—|\bto\b|\bthrough\b|\bthru\b)\s*([A-Za-z]+)\b\.?",
+                  day_range, text)
+    # A day of the week written onto a date range's dots ("1/1/2026...fri", "oct...mon") would be one end of it, and
+    # one right after < or > the thing compared ("<fri"): both refused. With a space it is a day of the week next to
+    # the range ("fri ...10/1/2026": the Fridays up to that day).
+    for m in re.finditer(r"(?:\b([A-Za-z]+)\.?)?\.\.\.([A-Za-z]+)?|[<>]=?\s*([A-Za-z]+)", rest):
+        if any(g and g.lower() in WEEKDAYS for g in m.groups()):
+            raise CriterionError("a day of the week can't be compared or be one end of a date range: type the "
+                                 "days (sat sun, mon...fri), alone or before a date (fri 1/1/2026..., "
+                                 "fri >10/1/2026).")
+    rest = re.sub(r"\b([A-Za-z]+)\b\.?", one, rest)
+    if not days:
+        return days, text
+    rest = re.sub(r"(?i)\b(and|or)\b|&|,", " ", rest)
+    # What separated the days ("sat / sun") goes too.
+    return days, " ".join(w for w in rest.split() if w not in ("/", "-", "–", "—", "+"))
+
+
 def date_condition(expr: sql.Composable, text: str, p: Params, with_time: bool = False,
                    no_year: int | None = None) -> sql.Composable:
     """Condition for a date or date-time expression (see "Dates" in the module docstring).
 
     ``no_year``: the field's year for "no year" (1600 for birthday/anniversary): such dates are only found by
-    month/day criteria or by asking for that year itself.
+    month/day criteria or by asking for that year itself (and never by a day of the week).
     """
     t = text.strip()
     _check_supported(t)
@@ -476,9 +544,23 @@ def date_condition(expr: sql.Composable, text: str, p: Params, with_time: bool =
         return sql.SQL("{} IS NULL").format(expr)
     if t == "*":
         return sql.SQL("{} IS NOT NULL").format(expr)
+    days, rest = weekdays(t)
+    if days:
+        # On the day as stored (the client's clock; Record created on the app's), like every other date criterion.
+        dow = sql.SQL("EXTRACT(ISODOW FROM {})::int = ANY({}::int[])").format(expr, p(sorted(days)))
+        known = _known_year(expr, no_year, p)
+        if known is not None:
+            dow = sql.SQL("({} AND {})").format(dow, known)
+        if rest in ("", "=", "*"):
+            return dow
+        return sql.SQL("({} AND {})").format(date_condition(expr, rest, p, with_time, no_year), dow)
 
     def token(s: str) -> DateToken:
         return date_token(s, p.today, with_time)
+
+    def at(moment: datetime) -> sql.Placeholder:
+        # A date column is compared with dates (a timestamp would cast the column and keep its index unused).
+        return p(moment if with_time else moment.date())
 
     def with_year(cond: sql.Composable, tok_years: set[int]) -> sql.Composable:
         known = _known_year(expr, no_year, p)
@@ -495,7 +577,7 @@ def date_condition(expr: sql.Composable, text: str, p: Params, with_time: bool =
                 raise CriterionError(f"{op} needs a full date, month or year (e.g. {op}10/1/2026).")
             bound = {"<": tok.start, "<=": tok.end, ">": tok.end, ">=": tok.start}[op]
             cmp = {"<": "<", "<=": "<", ">": ">=", ">=": ">="}[op]
-            return with_year(sql.SQL("{} {} {}").format(expr, sql.SQL(cmp), p(bound)), set())
+            return with_year(sql.SQL("{} {} {}").format(expr, sql.SQL(cmp), at(bound)), set())
     if "..." in t:
         sa, sb = _range(t, "1/1/2026...3/31/2026")
         if not sa or not sb:  # an open end: up to and including b, or from a on
@@ -504,8 +586,8 @@ def date_condition(expr: sql.Composable, text: str, p: Params, with_time: bool =
                 lo = tok.month * 100 + (tok.day or 1) if sa else 101
                 hi = tok.month * 100 + (tok.day or 31) if sb else 1231
                 return sql.SQL("{} BETWEEN {} AND {}").format(_md_expr(expr), p(lo), p(hi))
-            cond = (sql.SQL("{} >= {}").format(expr, p(tok.start)) if sa
-                    else sql.SQL("{} < {}").format(expr, p(tok.end)))
+            cond = (sql.SQL("{} >= {}").format(expr, at(tok.start)) if sa
+                    else sql.SQL("{} < {}").format(expr, at(tok.end)))
             return with_year(cond, set())
         a, b = token(sa), token(sb)
         if (a.month is None) != (b.month is None):
@@ -518,14 +600,14 @@ def date_condition(expr: sql.Composable, text: str, p: Params, with_time: bool =
             return sql.SQL("({md} >= {lo} OR {md} <= {hi})").format(md=md, lo=p(lo), hi=p(hi))
         if a.start >= b.end:  # the first end starts after the second is over: nothing could match
             raise CriterionError(f"The range {t} goes backwards: put the earlier (smaller) value first.")
-        cond = sql.SQL("({e} >= {s} AND {e} < {n})").format(e=expr, s=p(a.start), n=p(b.end))
+        cond = sql.SQL("({e} >= {s} AND {e} < {n})").format(e=expr, s=at(a.start), n=at(b.end))
         return with_year(cond, {a.start.year} if a.start.year == b.start.year else set())
     tok = token(t.lstrip("="))
     if tok.month is not None:
         if tok.day is None:
             return sql.SQL("EXTRACT(MONTH FROM {}) = {}").format(expr, p(tok.month))
         return sql.SQL("{} = {}").format(_md_expr(expr), p(tok.month * 100 + tok.day))
-    cond = sql.SQL("({e} >= {s} AND {e} < {n})").format(e=expr, s=p(tok.start), n=p(tok.end))
+    cond = sql.SQL("({e} >= {s} AND {e} < {n})").format(e=expr, s=at(tok.start), n=at(tok.end))
     return with_year(cond, {tok.start.year})
 
 
@@ -564,21 +646,39 @@ def business_condition(text: str, p: Params) -> sql.Composable:
     return sql.SQL("r.business_id IN (SELECT b.id FROM businesses b WHERE {})").format(_coalesce(cond))
 
 
+# Kinds whose condition (except a sole = or *, which look for empty values themselves) is NULL exactly when the
+# searched value is: guarded with "value IS NOT NULL" instead of COALESCE, so the value's index can be used.
+_GUARDED_KINDS = ("text", "number", "date", "any")
+
+
 def condition(f: FindField, text: str, p: Params) -> sql.Composable:
-    """The SQL condition for criterion ``text`` on field ``f`` (wrapped in COALESCE, see the module docstring).
+    """The SQL condition for criterion ``text`` on field ``f``, never NULL (see the module docstring).
 
     Raises :class:`CriterionError` with a message naming the field when the text can't be read.
     """
     try:
-        return _coalesce(_condition(f, normalize(text), p))
+        t = normalize(text)
+        cond = _condition(f, t, p)
     except CriterionError as exc:
         raise CriterionError(f"{f.label}: {exc}") from None
+    if f.kind in ("first", "last"):
+        return cond                     # never NULL: name_condition guards each of its parts
+    if f.kind in _GUARDED_KINDS and (f.expr or f.column or f.kind == "any") and t.strip() not in ("=", "*"):
+        return _guard(cond, _value(f))
+    return _coalesce(cond)
+
+
+def _value(f: FindField) -> sql.Composable:
+    """The searched value of a record field (its column), of the Date (its expression) or of Any field."""
+    if f.kind == "any":
+        return sql.SQL("r.search_text")
+    return sql.SQL(f.expr) if f.expr else sql.SQL("r.{}").format(sql.Identifier(f.column))
 
 
 def _condition(f: FindField, text: str, p: Params) -> sql.Composable:
     """:func:`condition` without the wrapping."""
     t = text.strip()
-    col = sql.SQL("r.{}").format(sql.Identifier(f.column)) if f.column else None
+    col = _value(f) if f.expr or f.column else None
     if f.kind == "text":
         return text_condition(col, t, p)
     if f.kind == "issue":
@@ -598,7 +698,7 @@ def _condition(f: FindField, text: str, p: Params) -> sql.Composable:
     if f.kind in ("first", "last"):
         return name_condition(f.kind, t, p)
     if f.kind == "any":
-        return text_condition(sql.SQL("r.search_text"), t, p)
+        return text_condition(_value(f), t, p)
     if f.kind == "column":
         return text_condition(sql.SQL("(r.source ->> {})").format(p(f.column)), t, p)
     if f.kind == "business":
