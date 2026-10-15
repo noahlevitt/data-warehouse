@@ -44,10 +44,15 @@ On **Find**, fill in only what you're looking for: **nothing is required**, and 
 shows every record. Each **request** has:
 
 - **Business** and **Services**: pick one or more of each (type to search the list). Empty = any.
-- **Last visit / order**: a date or a range of dates, e.g. `1/1/2026...1/20/2026` (it is a date only — no times).
+- **Date**: the record's last visit or, from a call log, its last call (one field for both: the later of the two
+  when a record has both). Type a day or a range of days, e.g. `1/1/2026...1/20/2026` (a date only — no times), or
+  a **day of the week**: `fri` or `Friday` finds every Friday, `sat sun` (or `sat/sun`) the weekends, `mon...fri`
+  (or `mon-fri`) the weekdays, and `fri 10/2026` the Fridays of October 2026. Days of the week work in every date
+  box.
 - **Phone**, **First name** and **Last name**.
 - **＋ Add a field**: a menu of every other field — Full name, Email, Address, City, State, ZIP, Total visits, Total
-  spent, Record created (the day the record was imported), Birthday, Anniversary, the other dates, Any field,
+  spent, Record created (the day the record was imported), Birthday, Anniversary, the other dates (first visit,
+  last text, redemption, spin, contacted), Any field,
   Consent, Phone problem, Tag, Import #, File name, Record ID, File row, and the files' own columns. A click adds
   its box to the request; the box's ✕ takes it off. What you typed elsewhere stays.
 
@@ -87,10 +92,12 @@ Examples:
 | A business's records with a certain phone number | one request: Business picked, Phone `516-555-0100` |
 | Smiths who live in Queens | one request: Last name `smith`, City `queens` (Add a field → City) |
 | Guests of Bayside or Flushing | two requests, each with City added: `bayside` / `flushing` |
-| Who visited between two days | Last visit / order `1/1/2026...1/20/2026` |
-| Who visited in 2025 | Last visit / order `1/1/2025...12/31/2025` (or `2025`) |
-| Who hasn't visited since June | Last visit / order `...6/30/2026` (up to and including June 30) |
-| Who visited since September | Last visit / order `9/1/2026...` (September 1 on) |
+| Who visited between two days | Date `1/1/2026...1/20/2026` |
+| Who visited in 2025 | Date `1/1/2025...12/31/2025` (or `2025`) |
+| Who hasn't visited since June | Date `...6/30/2026` (up to and including June 30) |
+| Who visited since September | Date `9/1/2026...` (September 1 on) |
+| Friday guests / Friday guests in October | Date `fri` / `fri 10/2026` |
+| Weekend guests this year / October guests except weekend ones | Date `sat sun 2026` / Date `10/2026`, then **+ Omit request** with Date `sat sun` |
 | Records imported today / this month | Add a field → Record created: `//` / `10/2026` |
 | October birthdays, any year | Add a field → Birthday: `10/*` (one day: `10/15`; a span: `10/1...10/15`) |
 | Records with no usable phone number | Phone `=` |
@@ -100,8 +107,8 @@ Examples:
 How to type criteria is listed under **How to search** on the page and in the [README](../README.md#finding-records).
 
 The **found set** shows how many records, how many unique phone numbers and how many without a usable number, and
-for each record its **Record ID** and when it was **created**. Pick
-the columns to show, the sort and the page. Select rows to:
+for each record its **Record ID**, when it was **created** and its **Date** with the day of the week ("10/09/2026
+Fri"). Pick the columns to show, the sort (e.g. **Date (newest first)**) and the page. Select rows to:
 
 - see **one record** (select one row): every field, its phone numbers (with the number as written and whether it
   was repaired — check those), values that couldn't be read, its tags, the row exactly as in the file, and a button
@@ -109,7 +116,7 @@ the columns to show, the sort and the page. Select rows to:
 - **Omit selected** from the found set.
 
 **Show omitted only** swaps the found set for every other record. **Prepare CSV of the found set** gives every
-field of every found record, for Excel.
+field of every found record, for Excel, with the Date and its day of the week in columns of their own.
 
 ## 4 · Put records into a tag
 
