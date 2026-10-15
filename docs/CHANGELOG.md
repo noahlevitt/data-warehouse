@@ -4,6 +4,30 @@ What changed in each version of Customer Records. The running version is shown i
 is tagged in git (`vX.Y.Z`). The history of the file converter this project is based on is in
 [converter/CHANGELOG.md](converter/CHANGELOG.md).
 
+## 1.3.0 — one Date, and days of the week
+
+- **Date** replaces Last visit / order on the Find page: one field for a record's last visit and, from a call log,
+  its last call (the later of the two when a record has both), as a day. It is searched exactly as before
+  (`1/1/2026...1/20/2026`, `...6/30/2026`, `=`, `*`). Last visit / order and Last call are no longer separate
+  boxes under Add a field; they are still stored on every record and exported as before (the converter's mapping,
+  checks and tag exports are unchanged).
+- **Days of the week** in every date box: `fri`, `Friday` or `fridays` finds every Friday; `sat sun` (or `sat/sun`)
+  the weekends; `mon...fri` (or `mon-fri`, `mon to fri`) Monday through Friday (`fri...mon` goes over the weekend);
+  `fri 10/2026` the Fridays of October 2026, `sat sun 1/1/2026...3/31/2026` the weekends in that range and
+  `fri >10/1/2026` the Fridays after October 1. Birthdays without a year never match a day of the week. A day of the
+  week as one end of a range (`1/1/2026...fri`, `oct...mon`) or right after `<` / `>` (`>fri 10/1/2026`) says it
+  can't be read.
+- The found set shows the **Date** with its day ("10/09/2026 Fri") as the first of the chosen columns, sorts by
+  **Date (newest first)** (instead of Last visit), and its CSV has **Date** and **Day** columns. One record's details
+  start with its Date.
+- **Finds use the database's indexes** for text, number and date fields, the Date, Any field and First / Last name.
+  Every criterion used to be wrapped in `COALESCE(…, false)` (so an empty field never breaks an Omit), which kept
+  every index unused and made each find read the whole table. These criteria are now made safe for empty fields with
+  `… AND value IS NOT NULL` instead, which finds exactly the same records; dates are compared as dates and whole
+  numbers as whole numbers, so the columns aren't converted on every row. The other fields still read every record
+  (KNOWN_ISSUES #14).
+- The three boxes next to each other at the top of a request are now the same width as the row below.
+
 ## 1.2.1 — `*` and `=` alone in any box
 
 - **`*` alone** in a box finds the records where that field has a value, **`=` alone** the records where it is
