@@ -679,7 +679,8 @@ def page_businesses(ctx: Ctx) -> None:
     if businesses:
         st.dataframe(pd.DataFrame([{"ID": b["id"], "Name": b["name"], "Records": b["records"],
                                     "Imports": b["imports"], "Tags": b["tags"], "Notes": b["notes"],
-                                    "Added": _when(b["created_at"], ctx.tz)} for b in businesses]),
+                                    "Added": _when(b["created_at"], ctx.tz), "Added by": b["created_by"] or "—"}
+                                   for b in businesses]),
                      hide_index=True, width="stretch")
     else:
         st.info("No businesses yet. Add the first one below.")
@@ -732,7 +733,8 @@ def page_services(ctx: Ctx) -> None:
     if services:
         st.dataframe(pd.DataFrame([{"Service": s["name"], "Active": "yes" if s["active"] else "no",
                                     "Imports": s["imports"], "Records": s["records"],
-                                    "Added": _when(s["created_at"], ctx.tz)} for s in services]),
+                                    "Added": _when(s["created_at"], ctx.tz), "Added by": s["created_by"] or "—"}
+                                   for s in services]),
                      hide_index=True, width="stretch")
     else:
         st.info("No services yet. Add the first one below.")
