@@ -4,6 +4,29 @@ What changed in each version of Customer Records. The running version is shown i
 is tagged in git (`vX.Y.Z`). The history of the file converter this project is based on is in
 [converter/CHANGELOG.md](converter/CHANGELOG.md).
 
+## 1.4.0 — gender
+
+- **Gender**, a new record field: `F` or `M` when the file says so (a column whose header says gender or sex, not
+  someone else's such as Child Gender: Female, Woman, Girl, W, F - Female, ♀, Féminin… become F; Male, Man, Boy…
+  become M), `Fb` or `Mb` when it is likely: guessed from the first name for every record whose file said neither.
+  The guess gives nothing for two people ("John and Mary"), looks for a title first (Mr, Mrs, Frau, Señora…), then
+  the first name in the US Social Security baby names since 1930 (shipped with the app, public domain): 90% or more
+  of the people with that name female gives Fb, male Mb; names used for both (Jordan, Riley) give nothing. Accents
+  don't matter (José, ANDRÉ); a hyphenated name needs both parts to agree ("Hans-Peter" → Mb; "Jean-François",
+  "Jean-Noël" → none: Jean is mostly a girl's name in the US); "Sr." and "Dr." say nothing. With no known first name, the email's first word is
+  used (`maria.lopez@…`).
+- Guesses are automatic and fast: an import's records are guessed as it is stored (about 1.5 seconds per 20,000
+  rows); the records already stored first get what their files' Gender column said (from the rows as written) and
+  are then guessed, once, on the first start of this version (about 20 seconds per 300,000 records). A guess never
+  replaces F or M, and a file's own other answer (Other, Non-binary, Mx) is never guessed over; Unknown, N/A, number
+  codes (1/2) and spreadsheet errors count as nothing said.
+- **The converter's rules** have a new field option, `header_words` / `header_not_words`: a column is mapped to such a
+  field only when its header names it ("Tender" and "General" look like "Gender" but aren't). Only Customer Records'
+  gender uses it; the file converter's own results are unchanged.
+- Find: **Gender** under Add a field: `f` finds F and Fb, `=f` only F, `fb` only the guesses. The found set shows
+  Gender by default. Gender isn't in the main system's import format, so tag exports are unchanged.
+- An empty date in the found set is blank again (1.3.1 showed "None").
+
 ## 1.3.1 — dates shown with their day of the week
 
 - **Dates on the Find page show their day of the week**: `Fri, 10/9/2026`, and `Fri, 10/9/2026 3:45 PM` for those
