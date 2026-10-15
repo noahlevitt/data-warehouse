@@ -210,20 +210,20 @@ def test_a_typo_in_constrain_keeps_the_found_set(env):
     button(at, "Constrain").click().run()
     assert any("Fill in something to constrain" in w.value for w in at.warning)
     assert at.session_state["found"] == smith
-    by_label(at.text_input, "Last visit / order").input("someday")
+    by_label(at.text_input, "Date").input("someday")
     button(at, "Constrain").click().run()
     assert any("isn't a date" in e.value and "unchanged" in e.value for e in at.error)
     assert at.session_state["found"] == smith and [m.value for m in at.metric][0] == "1"
-    by_label(at.text_input, "Last visit / order").input("")
+    by_label(at.text_input, "Date").input("")
     by_label(at.text_input, "First name").input("john")
     button(at, "Constrain").click().run()
     assert not at.error and [m.value for m in at.metric][0] == "1"
 
 
 def test_the_most_used_fields_are_shown_and_the_others_added(env):
-    """Business, Services and Last visit, then Phone, First and Last name; others from Add a field (and ✕ off)."""
+    """Business, Services and Date, then Phone, First and Last name; others from Add a field (and ✕ off)."""
     at = run_page("Find")
-    assert [t.label for t in at.text_input][:4] == ["Last visit / order", "Phone", "First name", "Last name"]
+    assert [t.label for t in at.text_input][:4] == ["Date", "Phone", "First name", "Last name"]
     assert not [t for t in at.text_input if t.label in ("City", "Record created", "Full name")]
     by_label(at.text_input, "Last name").input("smith")
     at.button(key="fq_1_1_add_name").click().run()                    # Full name, from the menu
@@ -243,8 +243,8 @@ def test_the_most_used_fields_are_shown_and_the_others_added(env):
 def test_a_sole_star_or_equals_in_a_box(env):
     """A sole * finds the records where the field has a value, a sole = those where it is blank (both records here
     have a phone and a last visit, and no city)."""
-    for label, text, count in [("Phone", "*", "2"), ("Phone", "=", "0"), ("Last visit / order", "=", "0"),
-                               ("Last visit / order", " * ", "2"), ("City", "=", "2"), ("City", "*", "0")]:
+    for label, text, count in [("Phone", "*", "2"), ("Phone", "=", "0"), ("Date", "=", "0"),
+                               ("Date", " * ", "2"), ("City", "=", "2"), ("City", "*", "0")]:
         at = run_page("Find")
         if label == "City":
             at.button(key="fq_1_1_add_f:city").click().run()
@@ -252,6 +252,18 @@ def test_a_sole_star_or_equals_in_a_box(env):
         button(at, "Find").click().run()
         assert not at.error, (label, text, [e.value for e in at.error])
         assert [m.value for m in at.metric][0] == count, (label, text)
+
+
+def test_a_day_of_the_week_in_the_date_box(env):
+    """Date "fri" finds the Fridays (John: Thu 10/1, Ann: Fri 10/2); the found set shows the Date with its day."""
+    at = run_page("Find")
+    assert "Fri" in by_label(at.text_input, "Date").placeholder
+    by_label(at.text_input, "Date").input("fri")
+    button(at, "Find").click().run()
+    assert [m.value for m in at.metric][0] == "1"
+    table = at.dataframe[0].value
+    assert list(table["Date"]) == ["10/02/2026 Fri"]
+    assert at.selectbox(key="found_sort").options[3] == "Date (newest first)"
 
 
 def test_omit_selected_and_show_omitted(env):
