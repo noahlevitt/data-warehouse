@@ -16,10 +16,11 @@ exports its unique phone numbers in the converter's import format.
     Tag ─► records.tags.export_table ─► converter.output.write_output (schemas/target_schema.yaml)
 
 Modules
-    * ``config``   — settings (DATABASE_URL, the record fields and export format files).
+    * ``config``   — settings (DATABASE_URL, the record fields and export format files, imports at once).
     * ``db``       — the connection pool and the tables, created and extended from the record fields at start.
     * ``store``    — businesses, services, imports, records, tags (all SQL outside finds and exports).
     * ``importer`` — the import sink: a converted file → records and their phone numbers.
+    * ``runner``   — runs each import in its own worker process, so several convert at the same time.
     * ``fields``   — what can be searched: the record fields plus business, service, import, tag, other columns.
     * ``criteria`` — one find criterion (FileMaker syntax) → an SQL condition, per kind of field.
     * ``find``     — find requests, omit, constrain / extend, the found set, its pages, counts and CSV.
@@ -31,4 +32,4 @@ Everything except ``ui`` is free of Streamlit and is tested against a real Postg
 
 # Customer Records' own version (shown in the sidebar, tagged vX.Y.Z in git). The conversion engine keeps its own
 # number (converter.__version__, file-converter's) so it is clear which converter release the engine came from.
-__version__ = "1.4.0"
+__version__ = "1.5.0"
