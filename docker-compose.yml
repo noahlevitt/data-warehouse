@@ -6,8 +6,9 @@
 #   docker compose down               stop (the database is kept in the "pgdata" volume)
 #   docker compose exec db pg_dump -U records customer_records > backup.sql     back up the records
 #
-# Before the first start: `cp .env.example .env`; set POSTGRES_PASSWORD there (and optionally ANTHROPIC_API_KEY).
-# On Linux: `mkdir -p data && sudo chown 1000 data` (the app container runs as uid 1000).
+# Before the first start: `cp .env.example .env`; set POSTGRES_PASSWORD and ADMIN_PASSWORD there (and optionally
+# ANTHROPIC_API_KEY). On Linux: `mkdir -p data && sudo chown 1000 data` (the app container runs as uid 1000).
+# Logins are always on here: sign in as ADMIN_USERNAME (admin), then add everyone on the Users page.
 # ---------------------------------------------------------------------------
 services:
   db:
@@ -33,11 +34,15 @@ services:
     env_file: .env               # settings and secrets; see .env.example for every option
     environment:
       DATABASE_URL: postgresql://records:${POSTGRES_PASSWORD:-change-me}@db:5432/customer_records
+      AUTH_MODE: password    # a shared copy: everyone signs in with their own account (overrides .env)
     depends_on:
       db:
         condition: service_healthy
     ports:
-      - "8502:8502"          # 8502: the file converter keeps 8501. Put a reverse proxy with HTTPS in front (see README)
+      # Only on the server itself (127.0.0.1): Caddy on the server gives it an HTTPS address (README, "On a server").
+      # Docker's published ports bypass the server's firewall (ufw), so publishing it on every address would put the
+      # sign-in page on plain HTTP for anyone who can reach the server. 8502: the file converter keeps 8501.
+      - "127.0.0.1:8502:8502"
     volumes:
       - ./data:/app/data                 # templates, import jobs and each import's files (SQLite + folders)
       - ./schemas:/app/schemas:ro        # record fields and export format — edit on the host
