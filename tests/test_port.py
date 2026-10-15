@@ -36,7 +36,7 @@ def test_docker_image_serves_and_checks_8502():
 
 
 def test_docker_compose_publishes_8502():
-    assert re.findall(r'"(\d+):(\d+)"', read("docker-compose.yml")) == [(str(PORT), str(PORT))]
+    assert re.findall(r'"(?:127\.0\.0\.1:)?(\d+):(\d+)"', read("docker-compose.yml")) == [(str(PORT), str(PORT))]
 
 
 def test_every_address_given_to_people_is_8502():
