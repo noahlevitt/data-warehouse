@@ -50,7 +50,7 @@ shows every record. Each **request** has:
   (or `mon-fri`) the weekdays, and `fri 10/2026` the Fridays of October 2026. Days of the week work in every date
   box.
 - **Phone**, **First name** and **Last name**.
-- **＋ Add a field**: a menu of every other field — Full name, Email, Address, City, State, ZIP, Total visits, Total
+- **＋ Add a field**: a menu of every other field — Full name, Gender, Email, Address, City, State, ZIP, Total visits, Total
   spent, Record created (the day the record was imported), Birthday, Anniversary, the other dates (first visit,
   last text, redemption, spin, contacted), Any field,
   Consent, Phone problem, Tag, Import #, File name, Record ID, File row, and the files' own columns. A click adds
@@ -81,10 +81,15 @@ Then:
   and `*` (any value) look at the stored names only. **Full name** (Add a field) searches first and last together:
   `lisa ray`.
 
+**Gender**: `F` or `M` when the imported file said so (Female, Woman, Girl… become F); `Fb` or `Mb` when it is only
+likely, guessed from the first name (Mary → Fb, John → Mb; names used for both, like Jordan, get nothing). Type `f`
+for F and Fb together, `=f` for only those the file said, `fb` for only the guesses.
+
 Examples:
 
 | To find | Do |
 |---|---|
+| Women, including the likely ones / only those the file said | Add a field → Gender: `f` / `=f` |
 | A business | Business: pick it, **Find** |
 | A business and one or more of its services | Business and Services: pick them in one request |
 | A business without one of its services | Business: pick it; **+ Omit request**; Services: pick the service there |
