@@ -42,7 +42,7 @@ from .tags import export_file, export_filename, export_table
 ss = st.session_state
 
 # Fields shown in the found-set table unless the person picks others.
-DEFAULT_SHOW = [F.DATE, "first_name", "last_name", "email", "city", "state", "birthday",
+DEFAULT_SHOW = [F.DATE, "first_name", "last_name", "gender", "email", "city", "state", "birthday",
                 "total_visits", "total_spent"]
 
 
@@ -99,8 +99,13 @@ TIP = {"text": "A word it starts with (smith), =smith for the whole word, \"main
        "bool": "yes or no; = empty; * any value"}
 TIP["created"] = TIP["date"]
 TIP["first"] = TIP["last"] = TIP["text"] + " A whole name typed into First name counts as first + last."
+# Example and tip of one field (by its key), instead of its kind's.
+FIELD_PLACEHOLDER = {"f:gender": "F, M, Fb or Mb"}
+FIELD_TIP = {"f:gender": "F or M: the file said so · Fb or Mb: likely, guessed from the first name · f finds F and "
+                         "Fb, =f only F, fb only the guesses · = empty · * any"}
 # What the Add a field menu says about a field when its name alone doesn't (shown when pointing at it).
 MENU_HELP = {"name": "First and last name together, however the file split them",
+             "f:gender": "F / M as the file says; Fb / Mb likely female / male, from the first name",
              "created": "The day the record was imported"}
 # The menu's four columns: which groups of find_layout go in each.
 MENU_COLUMNS = [["Name, contact & address"], ["Visits & spend", "Columns of the files"], ["Dates"], ["Other"]]
@@ -161,9 +166,10 @@ def _reset_requests() -> None:
 
 def _box(where, f: FindField, key: str) -> str:
     """One field's box in a request; returns what is typed."""
-    example = "e.g. 10/* (October) or 10/15" if f.no_year_value is not None else PLACEHOLDER.get(f.kind, "")
-    return where.text_input(f.label, key=key, placeholder=example,
-                            help=TIP.get(f.kind, TIP["text"]) + (f" — {f.help}" if f.help else ""))
+    example = ("e.g. 10/* (October) or 10/15" if f.no_year_value is not None
+               else FIELD_PLACEHOLDER.get(f.key) or PLACEHOLDER.get(f.kind, ""))
+    tip = FIELD_TIP.get(f.key) or TIP.get(f.kind, TIP["text"]) + (f" — {f.help}" if f.help else "")
+    return where.text_input(f.label, key=key, placeholder=example, help=tip)
 
 
 def page_find(ctx: Ctx) -> None:
@@ -391,7 +397,7 @@ def _found_set(ctx: Ctx, fields: list[FindField], businesses: list[dict]) -> Non
     table = F.page_frame(rows, ctx.schema, show, ctx.tz)
     st.caption("Select rows to see a record or to omit them from the found set.")
     event = st.dataframe(table, hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row",
-                         key=f"found_tbl_{sig}_{per_page}_{pg}",
+                         key=f"found_tbl_{sig}_{per_page}_{pg}", placeholder="",   # an empty date stays empty
                          column_config={F.ID_COL: st.column_config.NumberColumn(format="%d", width="small"),
                                         "Import #": st.column_config.NumberColumn(format="%d", width="small"),
                                         "Row": st.column_config.NumberColumn(format="%d", width="small"),
