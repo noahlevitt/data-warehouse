@@ -38,7 +38,7 @@ from converter.output import neutralise_formula
 from converter.schema import TargetSchema
 
 from .criteria import FALSE, TRUE, CriterionError, Params, condition
-from .db import Database, column_type
+from .db import Database, column_type, date_expr, date_fields
 from .fields import FindField
 
 # A found-set node: {"t": "find", "requests": [...]}, {"t": "and"|"or", "parts": [n, n]}, {"t": "not", "part": n},
@@ -182,13 +182,15 @@ def counts(db: Database, cond: sql.Composable, params: dict) -> dict:
     return row
 
 
+# Stands for the Date (records.db.date_expr) in SORTS: "{date}" in an order, DATE in what it needs.
+DATE = "@date"
 # Sort choices of the found-set table: label → (ORDER BY, record fields it needs). Every order ends on r.id so
 # pages never overlap.
 SORTS = {
     "Import order": ("r.id", set()),
     "Last name": ("lower(r.last_name) NULLS LAST, lower(r.first_name) NULLS LAST, r.id", {"last_name", "first_name"}),
     "First name": ("lower(r.first_name) NULLS LAST, lower(r.last_name) NULLS LAST, r.id", {"last_name", "first_name"}),
-    "Last visit (newest first)": ("r.transactions_last DESC NULLS LAST, r.id", {"transactions_last"}),
+    "Date (newest first)": ("{date} DESC NULLS LAST, r.id", {DATE}),
     "Total spent (highest first)": ("r.total_spent DESC NULLS LAST, r.id", {"total_spent"}),
     "Total visits (most first)": ("r.total_visits DESC NULLS LAST, r.id", {"total_visits"}),
     "Business": ("r.business_id, r.id", set()),
@@ -198,25 +200,40 @@ SORTS = {
 
 def available_sorts(schema: TargetSchema) -> list[str]:
     """The sort choices whose fields exist in the record fields."""
-    return [label for label, (_, need) in SORTS.items() if need <= set(schema.field_names)]
+    names = set(schema.field_names) | ({DATE} if date_expr(schema) else set())
+    return [label for label, (_, need) in SORTS.items() if need <= names]
+
+
+def record_date(schema: TargetSchema, rec: dict):
+    """A record's Date from its stored values (as records.db.date_expr computes it): the later day of its last
+    visit and last call, or None."""
+    days = [v.date() if isinstance(v, datetime) else v for v in (rec.get(f.name) for f in date_fields(schema))]
+    days = [d for d in days if d is not None]
+    return max(days) if days else None
+
+
+def day_name(d) -> str:
+    """The day of the week of a date, abbreviated ("Fri"); "" for None."""
+    return d.strftime("%a") if d is not None else ""
 
 
 def page(db: Database, schema: TargetSchema, cond: sql.Composable, params: dict, sort: str = "Import order",
          limit: int = 100, offset: int = 0) -> list[dict]:
     """One page of the found set: record ID, when it was created, business, service, import, file row, phones,
-    problem, every field."""
+    problem, the Date (``activity_date``), every field."""
     fields = [f for f in schema.fields if column_type(f) is not None]
-    order_sql = SORTS.get(sort, SORTS["Import order"])[0]
+    date = date_expr(schema) or "NULL::date"
+    order_sql = SORTS.get(sort, SORTS["Import order"])[0].replace("{date}", date)
     return db.fetch(sql.SQL("""
         SELECT r.id, r.created_at, r.business_id, b.name AS business_name, s.name AS service_name, i.job_id AS import_no,
                r.file_row,
                (SELECT string_agg(rp.phone, ', ' ORDER BY rp.position) FROM record_phones rp
                  WHERE rp.record_id = r.id) AS phones,
-               r.phone_issue, {fields}
+               r.phone_issue, {date} AS activity_date, {fields}
         FROM records r JOIN businesses b ON b.id = r.business_id JOIN services s ON s.id = r.service_id
         JOIN imports i ON i.id = r.import_id
         WHERE {cond} ORDER BY {order} LIMIT {limit} OFFSET {offset}""").format(
-        fields=sql.SQL(", ").join(sql.SQL("r.{}").format(sql.Identifier(f.name)) for f in fields),
+        date=sql.SQL(date), fields=sql.SQL(", ").join(sql.SQL("r.{}").format(sql.Identifier(f.name)) for f in fields),
         cond=cond, order=sql.SQL(order_sql), limit=sql.Literal(int(limit)), offset=sql.Literal(int(offset))), params)
 
 
@@ -236,7 +253,8 @@ def _cell(v, timezone: str | None = None) -> str:
 
 def found_set_csv(db: Database, schema: TargetSchema, cond: sql.Composable, params: dict,
                   sort: str = "Import order", timezone: str = "America/New_York") -> bytes:
-    """The whole found set as CSV (UTF-8 with BOM, for Excel): record and import details, numbers, every field.
+    """The whole found set as CSV (UTF-8 with BOM, for Excel): record and import details, numbers, the Date and its
+    day of the week, every field.
 
     Cells that a spreadsheet would run as a formula get a leading apostrophe (converter.output.neutralise_formula).
     """
@@ -244,14 +262,15 @@ def found_set_csv(db: Database, schema: TargetSchema, cond: sql.Composable, para
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["Record ID", "Record created", "Business ID", "Business", "Service", "Import #", "File row",
-                "Phones", "Phone problem"] + [f.header for f in fields])
+                "Phones", "Phone problem", "Date", "Day"] + [f.header for f in fields])
     offset, chunk = 0, 5000
     while True:
         rows = page(db, schema, cond, params, sort, limit=chunk, offset=offset)
         for r in rows:
             w.writerow([neutralise_formula(_cell(x, timezone)) for x in
                         [r["id"], r["created_at"], r["business_id"], r["business_name"], r["service_name"],
-                         r["import_no"], r["file_row"], r["phones"], r["phone_issue"]] + [r[f.name] for f in fields]])
+                         r["import_no"], r["file_row"], r["phones"], r["phone_issue"], r["activity_date"],
+                         day_name(r["activity_date"])] + [r[f.name] for f in fields]])
         if len(rows) < chunk:
             break
         offset += chunk
@@ -260,16 +279,28 @@ def found_set_csv(db: Database, schema: TargetSchema, cond: sql.Composable, para
 
 # The found-set table's column with the record's ID; the pages read selected rows' IDs from it.
 ID_COL = "Record ID"
+# The found-set table's Date column, chosen like a field (by this key) and shown with its day of the week.
+DATE_COL = "Date"
 
 
 def page_frame(rows: list[dict], schema: TargetSchema, show: list[str],
                timezone: str = "America/New_York") -> pd.DataFrame:
-    """The found-set page as a table for the screen: fixed columns first, then the chosen fields (by name)."""
+    """The found-set page as a table for the screen: fixed columns first, then the chosen fields (by name; DATE is
+    the Date, shown with its day of the week: "10/09/2026 Fri")."""
     heads = {f.name: f.header for f in schema.fields}
+
+    def value(r: dict, k: str) -> str:
+        if k == DATE:
+            d = r.get("activity_date")
+            return f"{_cell(d)} {day_name(d)}".strip()
+        return _cell(r.get(k))
+
+    heads[DATE] = DATE_COL
     table = pd.DataFrame([{
         ID_COL: r["id"], "Created": _cell(r["created_at"], timezone),
         "Business": f"{r['business_id']} · {r['business_name']}", "Service": r["service_name"],
-        "Phones": r["phones"] or "", **{heads[k]: _cell(r.get(k)) for k in show if k in heads and k in r},
+        "Phones": r["phones"] or "",
+        **{heads[k]: value(r, k) for k in show if k in heads and (k in r or k == DATE)},
         "Phone problem": r["phone_issue"], "Import #": r["import_no"], "Row": r["file_row"],
     } for r in rows])
     return table
