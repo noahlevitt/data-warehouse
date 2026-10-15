@@ -28,12 +28,14 @@ on the tags concerned. A business ID corrected later follows into every table (`
 
 Column types per record field type: date → date, datetime → timestamp (as written in the client's time zone, no
 zone), integer → bigint, decimal → numeric, boolean → boolean, everything else → text. Phone fields have no column:
-their numbers are rows of ``record_phones``.
+their numbers are rows of ``record_phones``. A record's **Date**, the later of its last visit and last call
+(:func:`date_expr`), is not a column: it is computed from those two, with an index on the expression.
 """
 
 from __future__ import annotations
 
 import atexit
+import hashlib
 import logging
 import re
 from contextlib import contextmanager
@@ -173,6 +175,27 @@ def column_type(f: FieldSpec) -> str | None:
     if date_only(f):
         return "date"
     return COLUMN_TYPES.get(f.type, "text")
+
+
+# The kinds of last-activity field a file's own date goes to (converter.heuristics step 7): the last visit
+# ("default") and, in a call log, the last call. The Find page's Date combines them.
+DATE_KINDS = ("default", "call_log")
+
+
+def date_fields(schema: TargetSchema) -> list[FieldSpec]:
+    """The record fields the Date combines (the last visit and the last call), in the schema's order."""
+    return [f for f in schema.fields if f.generic_date in DATE_KINDS and f.type in ("date", "datetime")]
+
+
+def date_expr(schema: TargetSchema, table: str = "r.") -> str | None:
+    """SQL for a record's **Date**: the later of its last visit and last call, as a day (a last call keeps its time
+    in its own field; the Date is its day). None when the record fields have neither. ``table`` "" for an index
+    expression (:meth:`Database.setup` creates one)."""
+    parts = [f"{table}{f.name}" if f.type == "date" or date_only(f) else f"({table}{f.name})::date"
+             for f in date_fields(schema)]
+    if not parts:
+        return None
+    return parts[0] if len(parts) == 1 else f"GREATEST({', '.join(parts)})"
 
 
 def check_fields(schema: TargetSchema) -> None:
@@ -347,6 +370,20 @@ class Database:
                 for part in ("first", "last"):
                     c.execute(sql.SQL("CREATE INDEX IF NOT EXISTS {} ON records USING gin (({}) gin_trgm_ops)").format(
                         sql.Identifier(f"records_{part}_name_split"), name_expr(part, table="")))
+            date_cols = {f.name for f in date_fields(schema)}
+            keep = None
+            if len(date_cols) > 1 and not date_cols & mismatched:
+                # The Date (the later of the last visit and last call) is searched by days and ranges and sorted
+                # newest first: an index on the expression, in that order, named after its definition so a changed
+                # set of fields gets its own (the one it replaces is dropped below).
+                definition = f"({date_expr(schema, table='')}) DESC NULLS LAST"
+                keep = f"records_date_{hashlib.sha1(definition.encode()).hexdigest()[:8]}"
+                c.execute(sql.SQL("CREATE INDEX IF NOT EXISTS {} ON records ({})").format(
+                    sql.Identifier(keep), sql.SQL(definition)))
+            for row in c.execute("SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() AND "
+                                 "tablename = 'records' AND indexname LIKE 'records\\_date\\_%%' AND "
+                                 "indexname IS DISTINCT FROM %s", (keep,)).fetchall():
+                c.execute(sql.SQL("DROP INDEX IF EXISTS {}").format(sql.Identifier(row["indexname"])))
             if self.trigram:
                 c.execute("CREATE INDEX IF NOT EXISTS records_search ON records USING gin (search_text gin_trgm_ops)")
                 c.execute("CREATE INDEX IF NOT EXISTS record_phones_trgm ON record_phones USING gin "
