@@ -23,7 +23,7 @@ kind            searched on
 ``last``        Last name: the stored one, or the rest of such a name
 ``any``         every value of the record, cleaned and as written in the file ("Any field")
 ``column``      one column of the original file, as written ("Column: Points"), for columns that feed no field
-``business``    the business: its ID (exact) or its name
+``business``    the merchant: its ID (exact) or its name
 ``service``     the service's name
 ``tag``         the tags the record is in (by name)
 ``file``        the imported file's name
@@ -58,15 +58,16 @@ class FindField:
     help: str = ""
 
 
-# Business and service have pickers of their own on the Find page, so they are never offered as boxes there (the
-# page's layout, which boxes each request shows and which are in its Add a field menu, is records.ui.find_layout).
+# Merchant and service have pickers of their own on the Find page (so does location, which has no FindField), so
+# they are never offered as boxes there (the page's layout, which boxes each request shows and which are in its Add
+# a field menu, is records.ui.find_layout).
 PICKER_KEYS = {"business", "service"}
 
 
 def find_fields(schema: TargetSchema, columns_seen: list[str]) -> list[FindField]:
     """Every searchable field: common ones, record fields, the record's ID and import, then the file columns."""
     out = [FindField("any", "Any field", "any", help="every value of the record, cleaned and as in the file"),
-           FindField("business", "Business", "business", help="business ID (exact) or name"),
+           FindField("business", "Merchant", "business", help="merchant ID (exact) or name"),
            FindField("service", "Service", "service")]
     date = date_expr(schema)
     if date:
