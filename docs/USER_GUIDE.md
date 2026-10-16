@@ -1,6 +1,6 @@
 # User guide
 
-How to set up businesses and services, import customer files, find records, put them into tags and export a tag
+How to load merchants and set up services, import customer files, find records, put them into tags and export a tag
 for the main system. No technical knowledge needed. The rules for reading files (phone numbers, dates, birthdays,
 column matching) are the file converter's, described in [converter/USER_GUIDE.md](converter/USER_GUIDE.md).
 
@@ -8,21 +8,27 @@ column matching) are the file converter's, described in [converter/USER_GUIDE.md
 
 Open the address in a browser (on one computer: http://localhost:8502). On the team's server, sign in with your own
 account: an admin adds accounts on **Setup → Users**, and each person changes their password under **My account** in
-the menu (*Sign out* is there too). Imports, tags, businesses and services show who made them. On one computer there
-is no login. The menu on the left has **Records** (Find, Tags, New import, Imports) and **Setup** (Businesses,
-Services, Templates, Fields, and Users for admins on the server).
+the menu (*Sign out* is there too). Imports, tags and services show who made them. On one computer there is no
+login. The menu on the left has **Records** (Find, Tags, New import, Imports) and **Setup** (Merchants, Services,
+Templates, Fields, and Users for admins on the server).
 
-## 1 · Set up businesses and services (once)
+## 1 · Merchants and services
 
-- **Businesses**: *Add a business* with its **ID exactly as in the main system** (that is how the two will be
-  connected), its name and optional notes. A mistyped ID can be corrected under *Change a business*: everything
-  of that business follows. A business can only be deleted while it has no imports and no tags.
+- **Merchants** come from the main app, with its merchant and location IDs; nobody types them in. A merchant is one
+  business with one location, or a corporate account with several locations. When the app can read the main app's
+  ClickHouse, they are loaded by themselves (every hour, or with *Load from the main app now*). Until then, on
+  **Merchants** → *Load from a file*: copy the query, run it in the ClickHouse console, export the result as CSV and
+  upload it. Do that again when the main app gets a new merchant or location.
+- A merchant without a location in the main app can't be imported for: add its location there first, then load the
+  merchants again.
 - **Services**: add each service imports can be for. One that is no longer used can be made inactive (untick
   *Active*): it is then not offered on New import, and records imported with it keep it.
 
 ## 2 · Import a file
 
-1. **New import**: choose the **Business** and the **Service**. They stay chosen for the next file.
+1. **New import**: choose the **Merchant**, its **Location** (filled in by itself when the merchant has one) and
+   the **Service**. They stay chosen for the next file. One file is for one location; a file that mixes locations
+   has to be split first, for now.
 2. Upload the file (CSV, Excel and the other formats the converter reads).
 3. Check how it was read and how its columns map to the record fields, exactly as in the converter (field grid,
    *Columns in your file*, notes, *Check for mistakes*). Columns that feed no field are still kept on each record
@@ -36,7 +42,7 @@ Good to know:
 - Every row becomes a record, also rows without a usable phone number (they show the reason, and are never
   exported). Empty rows are skipped.
 - A customer with several numbers keeps them all on one record.
-- If the same file was already imported for that business, the page warns you: importing it again stores its rows a
+- If the same file was already imported for that merchant, the page warns you: importing it again stores its rows a
   second time.
 - **A mistake in the mapping?** Open the import, *Delete this import's records* (tick the box first), then *Re-run
   this import*, or upload the file again. Deleting also takes the records out of any tag they were in, and the
@@ -47,7 +53,9 @@ Good to know:
 On **Find**, fill in only what you're looking for: **nothing is required**, and a **Find** with everything blank
 shows every record. Each **request** has:
 
-- **Business** and **Services**: pick one or more of each (type to search the list). Empty = any.
+- **Merchants**, **Locations** and **Services**: pick one or more of each (type to search the list). Empty = any.
+  A merchant means all its locations. **Locations** lists the locations of corporate accounts (merchants with
+  several), to look at one or some of them.
 - **Date**: the record's last visit or, from a call log, its last call (one field for both: the later of the two
   when a record has both). Type a day or a range of days, e.g. `1/1/2026...1/20/2026` (a date only — no times), or
   a **day of the week**: `fri` or `Friday` finds every Friday, `sat sun` (or `sat/sun`) the weekends, `mon...fri`
@@ -76,8 +84,8 @@ Then:
   as it was: correct it and click again.
 - Ranges use three dots: `...`. Typing `…` (a phone or a Mac may turn three dots into one character) or `..` works
   the same.
-- In **Business** and **Services**, type an ID or part of a name and press Enter to pick the first match; click to
-  pick more.
+- In **Merchants**, **Locations** and **Services**, type an ID or part of a name and press Enter to pick the first
+  match; click to pick more.
 - **Names**: a file with one *Name* (or *Full Name*, *Customer Name*…) column is split into first and last name when
   it is imported. A file whose *First Name* column holds the whole name keeps it there, with no Last name ("Lisa
   Marie Ray"). First name and Last name also read such a name as split at its first space (Lisa / Marie Ray), or at
@@ -94,11 +102,12 @@ Examples:
 | To find | Do |
 |---|---|
 | Women, including the likely ones / only those the file said | Add a field → Gender: `f` / `=f` |
-| A business | Business: pick it, **Find** |
-| A business and one or more of its services | Business and Services: pick them in one request |
-| A business without one of its services | Business: pick it; **+ Omit request**; Services: pick the service there |
-| A phone number, any business | Phone `516-555-0100` (nothing else) |
-| A business's records with a certain phone number | one request: Business picked, Phone `516-555-0100` |
+| A merchant (all its locations) | Merchants: pick it, **Find** |
+| One location of a corporate account | Locations: pick it, **Find** |
+| A merchant and one or more of its services | Merchants and Services: pick them in one request |
+| A merchant without one of its services | Merchants: pick it; **+ Omit request**; Services: pick the service there |
+| A phone number, any merchant | Phone `516-555-0100` (nothing else) |
+| A merchant's records with a certain phone number | one request: Merchants picked, Phone `516-555-0100` |
 | Smiths who live in Queens | one request: Last name `smith`, City `queens` (Add a field → City) |
 | Guests of Bayside or Flushing | two requests, each with City added: `bayside` / `flushing` |
 | Who visited between two days | Date `1/1/2026...1/20/2026` |
@@ -136,24 +145,24 @@ of the week in a column of its own. Tag exports write dates in the main system's
 Under the found set, **Tag the found set**:
 
 - choose a tag and **Add found set** (or **Remove found set**), or
-- type a name, choose the business and **Create tag with found set**.
+- type a name, choose the merchant and **Create tag with found set**.
 
-A tag belongs to **one business**: only that business's records go in, and the page says how many of other
-businesses were left out. **Constrain** with one Business to keep a found set to one business.
+A tag belongs to **one merchant** (any of its locations): only that merchant's records go in, and the page says how
+many of other merchants were left out. **Constrain** with one merchant to keep a found set to one merchant.
 
 ## 5 · Export a tag
 
 **Tags** → select a tag:
 
 - **Prepare export**, then download it. The file has **one row per unique phone number**, in the import format of
-  the main system (the converter's), named `<business ID>_<tag>_<date-time>.csv`.
+  the main system (the converter's), named `<merchant ID>_<tag>_<date-time>.csv`.
 - **Export preview** shows the rows exactly as exported.
 - **Records** lists the tag's records; select some and *Remove selected from tag*.
 - **Edit**: rename, notes, delete the tag (the records stay).
 - **History**: who created it, added or removed records (and how many), exported it.
 
 What the export contains when a number is in several records: the latest date of each activity, the birthday or
-anniversary with a real year, and **consent left blank** (the main system handles opt-outs per business; blank
+anniversary with a real year, and **consent left blank** (the main system handles opt-outs per merchant; blank
 changes nobody's consent). Records without a usable number aren't in it.
 
 ## Common questions
