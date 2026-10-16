@@ -2,9 +2,10 @@
 
 Overview
 --------
-A tag holds records of one business. Its export (:func:`export_table`, :func:`export_file`) is the file imported
-into the main system, in exactly the converter's import format (``schemas/target_schema.yaml``: headers, order,
-formats, CSV settings), written by the converter's own writer. Each usable phone number of the tag's records
+A tag holds records of one merchant (the main app's; ``businesses`` in the database). Its export
+(:func:`export_table`, :func:`export_file`) is the file imported into the main system, in exactly the converter's
+import format (``schemas/target_schema.yaml``: headers, order, formats, CSV settings), written by the converter's
+own writer. Each usable phone number of the tag's records
 appears once; records without a usable number are left out (and counted).
 
 Each export column is filled from the record field with the same name (``phone_number``, ``calls_last``,
@@ -15,7 +16,7 @@ Export column            Value
 =======================  ===========================================================================================
 phone number             the number, formatted as the import format says (10 digits)
 consent                  **always blank** for now: blank changes nobody's consent in the main system, which handles
-                         opt-outs per business (decided 2026-10-14; the records keep the file's consent, searchable)
+                         opt-outs per merchant (decided 2026-10-14; the records keep the file's consent, searchable)
 date-time columns        the latest of the records' values (calls_last, transactions_last, in_sms_last,
                          redemptions_last, spin_last, last_contacted)
 birthday, anniversary    the date with a real year that most of the records give (the latest record's on a tie);
@@ -141,7 +142,7 @@ def export_file(db: Database, tag_id: int, schema: TargetSchema, export: TargetS
 
 
 def export_filename(business_id: str, tag_name: str, export: TargetSchema, stamp: str) -> str:
-    """``<business id>_<tag name>_<YYYYMMDD-HHMM>.csv`` with only safe characters."""
+    """``<merchant id>_<tag name>_<YYYYMMDD-HHMM>.csv`` with only safe characters."""
     def safe(s: str) -> str:
         return re.sub(r"[^A-Za-z0-9._-]+", "_", s).strip("_") or "tag"
     ext = "xlsx" if export.output.format == "xlsx" else "csv"
