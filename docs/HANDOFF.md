@@ -64,8 +64,8 @@ change them only when a converter fix is ported in (section 5).
 - Changes go to Noah as a git bundle, `data-warehouse-updateN.bundle`, numbered in order. The repository itself
   came as `data-warehouse-1.0.0.bundle` (complete, no prerequisites); 1.0.1 came as update1, 1.0.2 as update2,
   1.1.0 as update3, 1.2.0 as update4, 1.2.1 as update5, 1.3.0 as update6, 1.3.1 as update7, 1.4.0 as update8,
-  1.5.0 as update9 and 1.6.0 as update10, so the next is `data-warehouse-update11.bundle`. Update this line with each
-  bundle.
+  1.5.0 as update9, 1.6.0 as update10 and 1.6.1 as update11 (with 1.6.0, for a copy still on 1.5.0), so the next is
+  `data-warehouse-update12.bundle`. Update this line with each bundle.
 
   ```bash
   git bundle create ../data-warehouse-updateN.bundle main vX.Y.Z ^vPREVIOUS
@@ -152,12 +152,16 @@ Customer Records (the repository is `data-warehouse`), and version 1.0.0.
 
 - **Waiting on the main app's lead developer** (asked by Noah, 2026-10-16): an app user for Customer Records on
   the main app's ClickHouse (SELECT on `pg.merchants` / `pg.locations`; later a `customer_records` database it may
-  write), the server's IP on the service's access list, and the host; whether `audience_members` is fully rebuilt
+  write); whether `audience_members` is fully rebuilt
   (a batch of 745 segments on 2026-10-14 21:50) and a segment type reading Customer Records' tags; whether segment
   evaluation applies consent, Do Not Call and the mobile check; whether Customer Records should also publish every
   imported row's dates (`generic_csv_import`) or only the tags. Reported to him: 183 segment memberships with
   numbers that break US numbering rules, and that the console's read-only role may kill queries and write to
-  outside systems.
+  outside systems. Known since: the service is `sstxt` (AWS us-east-1, ClickHouse 26.6), host
+  `m7qi5e0gq5.us-east-1.aws.clickhouse.cloud` (HTTPS port 8443, so `CLICKHOUSE_URL` is the host name alone), and its
+  IP access list is open to anywhere (`0.0.0.0/0`), so no server IP needs adding; worth narrowing to the servers that
+  use it. Location addresses there are JSON (`{"zip", "city", "state", "street"}`, city sometimes null), shown on one
+  line since 1.6.1.
 - **Questions for Noah**:
   - The main system: how opt-outs, last messages and transactions are stored (needed for the Do Not Call / 18-month
     rule). Merchant IDs are whole numbers; phone numbers are stored as 10-digit numbers without the leading 1.
@@ -252,6 +256,15 @@ Customer Records (the repository is `data-warehouse`), and version 1.0.0.
   wrong `DATA_DIR`; and two doc errors (hand-typed IDs equal to main app IDs are taken over, not marked removed;
   imports from before 1.6.0 can be re-run when their merchant has one location). Not covered in its time box:
   draft restore with a removed location (same code path as the fix), Constrain/Extend with locations in a browser.
+- **Independent test of 1.6.1** (limited: the address change and reading the merchant file; about 15 minutes, with
+  the main app's real list of 2026-10-16, which loads with no JSON left in any address): no serious defect. Fixed
+  and tested (`test_unusual_json_addresses`, `test_a_file_as_a_spreadsheet_saves_it`,
+  `test_a_wrong_file_says_what_to_do`): a ZIP given as a number lost its leading zero; true/false, decimals and
+  coordinates were written into the address; line breaks stayed in it; escapes the database can't store (`\u0000`,
+  `\ud800`) and absurdly nested JSON broke the load; and, from before 1.6.1, a file with Mac line endings (a lone
+  `\r`) or a 130,000-character cell showed a traceback instead of a message. Not fixed (none occur in the real data):
+  a street given as a list is left out; a file saved in Mac Roman is read as Windows encoding; ClickHouse's own TSV
+  export escapes an apostrophe as `\'`, which leaves such an address as raw JSON (the page says to export CSV).
 - Limits known and accepted: [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
 ## 5. Taking fixes from the file converter
