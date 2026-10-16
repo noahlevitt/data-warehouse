@@ -1,4 +1,4 @@
-"""The Streamlit pages Customer Records adds to the app: Find, Tags, Businesses and Services.
+"""The Streamlit pages Customer Records adds to the app: Find, Tags, Merchants and Services.
 
 Overview
 --------
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
@@ -36,6 +37,8 @@ from . import find as F
 from .criteria import SYNTAX
 from .db import Database, date_fields
 from .fields import PICKER_KEYS, FindField, find_fields
+from .merchants import QUERY as MERCHANTS_QUERY
+from .merchants import parse_rows, rows_from_file
 from .store import RecordStore, StoreError
 from .tags import export_file, export_filename, export_table
 
@@ -58,12 +61,28 @@ class Ctx:
     tz: str
     open_import: Callable[[int], None]
     pages: dict[str, Any] = field(default_factory=dict)   # st.Page objects by name ("find", "tags", …)
+    merchants: Any = None                                  # records.merchants.MerchantRefresher (or None)
 
 
 # ---------------------------------------------------------------------------------------------------- helpers
 
 def _biz_label(b: dict) -> str:
-    return f"{b['id']} · {b['name']}"
+    """A merchant as pickers show it: "63 · Flakowitz Corporate", marked when it can no longer be imported for."""
+    note = (" (no longer in the main app)" if b.get("removed_at") is not None
+            else f" ({b['status']})" if b.get("status", "active") != "active" else "")
+    return f"{b['id']} · {b['name']}{note}"
+
+
+def location_label(x: dict, merchant: bool = True) -> str:
+    """A location as pickers show it: "Flakowitz Corporate · Boca Raton — 1234 Main St" (an office says so)."""
+    text = (f"{x['business_name']} · " if merchant else "") + (x["name"] or "(no name)")
+    if x.get("address"):
+        text += f" — {x['address']}"
+    if x.get("kind") == "office":
+        text += " (office)"
+    if x.get("removed_at") is not None:
+        text += " (no longer in the main app)"
+    return text
 
 
 def _when(ts, tz: str) -> str:
@@ -175,17 +194,24 @@ def _box(where, f: FindField, key: str) -> str:
 def page_find(ctx: Ctx) -> None:
     """Page "Find": find requests (FileMaker style), the found set, its records, and adding it to a tag.
 
-    Each request shows what is searched most: Business, Services and Date, then Phone, First name and Last
-    name; every other field is added to a request from its **＋ Add a field** menu (and taken off with ✕). The
-    requests are one form: typing doesn't rerun the page, and Enter in any box is the Find button (the form's first
-    button); the menu's buttons submit the form too, so what is typed is kept. Nothing is required; a Find with
+    Each request shows what is searched most: Merchants (Locations too, when a merchant has several), Services
+    and Date, then Phone, First name and Last name; every other field is added to a request from its **＋ Add a
+    field** menu (and taken off with ✕). The requests are one form: typing doesn't rerun the page, and Enter in any
+    box is the Find button (the form's first button); the menu's buttons submit the form too, so what is typed is
+    kept. Nothing is required; a Find with
     everything blank shows every record.
     """
     st.header("Find records")
     totals = ctx.records.totals()
     if not totals["records"]:
-        st.info("No records yet. Import a file under **New import** (pick its business and service there).")
+        st.info("No records yet. Import a file under **New import** (pick its merchant, location and service "
+                "there).")
     businesses = ctx.records.list_businesses()
+    # Locations are picked only for merchants with several (corporate accounts): a merchant with one location is
+    # the same as that location. The requests are a form, so the list can't follow the merchants picked.
+    every = ctx.records.list_locations()
+    per = Counter(x["business_id"] for x in every)
+    multi = [x for x in every if per[x["business_id"]] > 1]
     services = ctx.records.list_services()
     fields = find_fields(ctx.schema, ctx.records.columns_seen())
     by_key = {f.key: f for f in fields}
@@ -226,13 +252,22 @@ def page_find(ctx: Ctx) -> None:
                 req["omit"] = kind == "Omit"
                 if len(ss.find_reqs) > 1 and h3.form_submit_button("Remove", key=f"{rkey}_rm", width="stretch"):
                     remove = req["id"]
-                c1, c2, c3 = st.columns(3, vertical_alignment="bottom")
+                if multi:
+                    c1, c0, c2, c3 = st.columns(4, vertical_alignment="bottom")
+                else:
+                    (c1, c2, c3), c0 = st.columns(3, vertical_alignment="bottom"), None
                 biz = c1.multiselect(
-                    "Business", [x["id"] for x in businesses], key=f"{rkey}_biz",
+                    "Merchants", [x["id"] for x in businesses], key=f"{rkey}_biz",
                     format_func=lambda i: next((_biz_label(x) for x in businesses if x["id"] == i), i),
-                    placeholder="Any business" if businesses else "No businesses yet", select_all=False,
-                    help="One or more businesses: type the ID or name and press Enter for the first match, or click "
-                         "them. Empty = any business.")
+                    placeholder="Any merchant" if businesses else "No merchants yet", select_all=False,
+                    help="One or more merchants: type the ID or name and press Enter for the first match, or click "
+                         "them. Empty = any merchant.")
+                locs = c0.multiselect(
+                    "Locations", [x["id"] for x in multi], key=f"{rkey}_loc",
+                    format_func=lambda i: next((location_label(x) for x in multi if x["id"] == i), i),
+                    placeholder="Any location", select_all=False,
+                    help="Only for merchants with several locations (corporate accounts): one or more of their "
+                         "locations. Empty = any location.") if c0 is not None else []
                 svc = c2.multiselect(
                     "Services", [x["id"] for x in services], key=f"{rkey}_svc",
                     format_func=lambda i: next((x["name"] + ("" if x["active"] else " (inactive)")
@@ -275,8 +310,8 @@ def page_find(ctx: Ctx) -> None:
                                 if mc.form_submit_button(f.label, key=f"{rkey}_add_{f.key}", type="tertiary",
                                                          help=MENU_HELP.get(f.key), disabled=f.key in req["extra"]):
                                     add = (req["id"], f.key)
-            requests.append({"omit": req["omit"], "businesses": list(biz), "services": list(svc),
-                             "criteria": [[k, t] for k, t in criteria if t.strip()]})
+            requests.append({"omit": req["omit"], "businesses": list(biz), "locations": list(locs),
+                             "services": list(svc), "criteria": [[k, t] for k, t in criteria if t.strip()]})
         a = st.columns(5)
         add_find = a[0].form_submit_button("+ Request", width="stretch", help="Add a request (OR)")
         add_omit = a[1].form_submit_button("+ Omit request", width="stretch",
@@ -309,13 +344,13 @@ def page_find(ctx: Ctx) -> None:
         st.warning(f"Fill in something to {'constrain' if do_constrain else 'extend'} the found set with; it is "
                    "unchanged. (A blank **Find** shows every record.)")
     elif do_find:
-        step = F.find_node(requests), _describe(requests, by_key, services)
+        step = F.find_node(requests), _describe(requests, by_key, services, multi)
     elif do_constrain:
         step = F.constrain(ss.found, requests), ss.get("found_note", "") + " → constrained: " + _describe(
-            requests, by_key, services)
+            requests, by_key, services, multi)
     elif do_extend:
         step = F.extend(ss.found, requests), ss.get("found_note", "") + " → extended: " + _describe(
-            requests, by_key, services)
+            requests, by_key, services, multi)
     elif do_all:
         step = F.all_records(), "All records"
     if step is not None:
@@ -335,14 +370,18 @@ def page_find(ctx: Ctx) -> None:
     _found_set(ctx, fields, businesses)
 
 
-def _describe(requests: list[dict], by_key: dict[str, FindField], services: list[dict]) -> str:
-    """A short description of a find for the found set's caption ("business 1001; omit Catering")."""
+def _describe(requests: list[dict], by_key: dict[str, FindField], services: list[dict],
+              locations: list[dict] | None = None) -> str:
+    """A short description of a find for the found set's caption ("merchant 63; omit Catering")."""
     names = {s["id"]: s["name"] for s in services}
+    places = {x["id"]: location_label(x).split(" — ")[0] for x in locations or []}
     parts = []
     for r in requests:
         bits = []
         if r["businesses"]:
-            bits.append("business " + ", ".join(r["businesses"]))
+            bits.append(("merchant " if len(r["businesses"]) == 1 else "merchants ") + ", ".join(r["businesses"]))
+        if r.get("locations"):
+            bits.append(", ".join(places.get(x, x) for x in r["locations"]))
         if r["services"]:
             bits.append(", ".join(names.get(s, str(s)) for s in r["services"]))
         bits += [f"{by_key[k].label if k in by_key else k} {t.strip()}" for k, t in r["criteria"]]
@@ -375,7 +414,7 @@ def _found_set(ctx: Ctx, fields: list[FindField], businesses: list[dict]) -> Non
     m[0].metric("Records", f"{cnt['records']:,}")
     m[1].metric("Unique phone numbers", f"{cnt['numbers']:,}")
     m[2].metric("Without a usable number", f"{cnt['no_phone']:,}")
-    m[3].metric("Businesses", f"{cnt['businesses']:,}")
+    m[3].metric("Merchants", f"{cnt['businesses']:,}")
     if not cnt["records"]:
         st.info("No records match.")
         if st.button("Show omitted only", help="Every record that isn't in the found set"):
@@ -445,7 +484,8 @@ def _record_detail(ctx: Ctx, record_id: int) -> None:
     with st.container(border=True):
         created = rec["created_at"].astimezone(ZoneInfo(ctx.tz)).replace(tzinfo=None)
         st.markdown(f"**Record ID {rec['id']}** · created {_show_value(created)} · {rec['business_id']} · "
-                    f"{rec['business_name']} · {rec['service_name']}"
+                    f"{rec['business_name']}" + (f" · {rec['location_name']}" if rec.get("location_name") else "")
+                    + f" · {rec['service_name']}"
                     f" · import #{rec['job_id'] or '—'} ({rec['file_name']}"
                     + (f", sheet {rec['sheet']}" if rec.get("sheet") else "") + f"), row {rec['file_row']}")
         c1, c2 = st.columns(2)
@@ -478,7 +518,7 @@ def _record_detail(ctx: Ctx, record_id: int) -> None:
 def _tag_actions(ctx: Ctx, cond, params: dict, cnt: dict, businesses: list[dict]) -> None:
     """Add the found set to a tag, remove it from one, or make a new tag from it."""
     with st.container(border=True):
-        st.markdown("**Tag the found set** — a tag belongs to one business; only that business's records go in. "
+        st.markdown("**Tag the found set** — a tag belongs to one merchant; only that merchant's records go in. "
                     "Its export has each phone number once.")
         biz_in_found = [r["business_id"] for r in ctx.db.fetch(
             sql.SQL("SELECT DISTINCT r.business_id FROM records r WHERE {} LIMIT 20").format(cond), params)]
@@ -494,8 +534,8 @@ def _tag_actions(ctx: Ctx, cond, params: dict, cnt: dict, businesses: list[dict]
             if res["already"]:
                 msg += f" {res['already']:,} were in the tag already."
             if res["other_business"]:
-                msg += (f" {res['other_business']:,} record(s) of other businesses were left out (a tag holds one "
-                        "business).")
+                msg += (f" {res['other_business']:,} record(s) of other merchants were left out (a tag holds one "
+                        "merchant).")
             st.success(msg)
         if c3.button("Remove found set", disabled=tag_id is None, width="stretch"):
             n = ctx.records.remove_from_tag(tag_id, cond, params, ctx.user["username"], detail)
@@ -504,22 +544,22 @@ def _tag_actions(ctx: Ctx, cond, params: dict, cnt: dict, businesses: list[dict]
             n1, n2, n3 = st.columns([1.6, 2, 1.2], vertical_alignment="bottom")
             default = biz_in_found[0] if len(biz_in_found) == 1 else None
             ids = [b["id"] for b in businesses]
-            biz = n1.selectbox("New tag for business", ids, index=ids.index(default) if default in ids else None,
+            biz = n1.selectbox("New tag for merchant", ids, index=ids.index(default) if default in ids else None,
                                format_func=lambda i: next((_biz_label(b) for b in businesses if b["id"] == i), i),
-                               placeholder="Choose the business")
+                               placeholder="Choose the merchant")
             name = n2.text_input("Tag name", placeholder="e.g. October promo — lapsed guests")
             if n3.form_submit_button("Create tag with found set", width="stretch"):
                 try:
                     tid = ctx.records.create_tag(biz or "", name, "", ctx.user["username"])
                     res = ctx.records.add_to_tag(tid, cond, params, ctx.user["username"], detail)
                     st.success(f"Tag '{name.strip()}' created with {res['added']:,} record(s)"
-                               + (f"; {res['other_business']:,} of other businesses left out." if res["other_business"]
+                               + (f"; {res['other_business']:,} of other merchants left out." if res["other_business"]
                                   else "."))
                 except StoreError as exc:
                     st.error(str(exc))
         if len(biz_in_found) > 1:
-            st.caption(f"The found set has records of {cnt['businesses']} businesses; **Constrain** with one "
-                       "**Business** to keep only its records.")
+            st.caption(f"The found set has records of {cnt['businesses']} merchants; **Constrain** with one "
+                       "**Merchant** to keep only its records.")
 
 
 # ---------------------------------------------------------------------------------------------------- Tags
@@ -531,17 +571,17 @@ def page_tags(ctx: Ctx) -> None:
         _tag_detail(ctx, int(qid))
         return
     st.header("Tags")
-    st.caption("A tag is a list of records of one business. Its export — one row per unique phone number, in the "
+    st.caption("A tag is a list of records of one merchant. Its export — one row per unique phone number, in the "
                "import format — is what gets imported into the main system. Add records from **Find**.")
     businesses = ctx.records.list_businesses()
     ids = [b["id"] for b in businesses]
     label = {b["id"]: _biz_label(b) for b in businesses}
-    pick = st.selectbox("Business", ids, index=None, placeholder="All businesses", format_func=label.get,
+    pick = st.selectbox("Merchant", ids, index=None, placeholder="All merchants", format_func=label.get,
                         key="tags_biz")
     tags = ctx.records.list_tags(pick)
     if tags:
         table = pd.DataFrame([{"#": t["id"], "Tag": t["name"],
-                               "Business": label.get(t["business_id"], t["business_id"]),
+                               "Merchant": label.get(t["business_id"], t["business_id"]),
                                "Records": t["records"], "Unique numbers": t["numbers"],
                                "Changed": _when(t["updated_at"], ctx.tz), "Created by": t["created_by"],
                                "Notes": t["notes"]} for t in tags])
@@ -557,8 +597,8 @@ def page_tags(ctx: Ctx) -> None:
     with st.form("new_tag", clear_on_submit=True):
         st.markdown("**New tag**")
         c1, c2 = st.columns(2)
-        biz = c1.selectbox("Business", ids, index=ids.index(pick) if pick in ids else None, format_func=label.get,
-                           placeholder="Choose the business")
+        biz = c1.selectbox("Merchant", ids, index=ids.index(pick) if pick in ids else None, format_func=label.get,
+                           placeholder="Choose the merchant")
         name = c2.text_input("Name")
         notes = st.text_input("Notes (optional)")
         if st.form_submit_button("Create tag", type="primary"):
@@ -616,7 +656,7 @@ def _tag_detail(ctx: Ctx, tag_id: int) -> None:
         if t["numbers"]:
             table, cn = export_table(ctx.db, tag_id, ctx.schema, ctx.export)
             st.caption(f"First {min(200, len(table)):,} of {len(table):,} rows, exactly as exported. Consent is "
-                       "blank in tag exports for now: the main system handles opt-outs per business.")
+                       "blank in tag exports for now: the main system handles opt-outs per merchant.")
             st.dataframe(table.head(200), hide_index=True, width="stretch")
         else:
             st.caption("No phone numbers in this tag yet.")
@@ -668,58 +708,87 @@ def _tag_records(ctx: Ctx, t: dict) -> None:
         st.rerun()
 
 
-# ---------------------------------------------------------------------------------------------------- Businesses
+# ---------------------------------------------------------------------------------------------------- Merchants
+
+def _load_summary(s: dict) -> str:
+    """What a load of the merchants changed, in a sentence."""
+    text = f"{s['merchants']:,} merchants and {s['locations']:,} locations"
+    changes = [f"{s[k]:,} {what}" for k, what in [("new_merchants", "new merchant(s)"),
+                                                   ("new_locations", "new location(s)"),
+                                                   ("back_merchants", "merchant(s) back in the main app"),
+                                                   ("back_locations", "location(s) back in the main app"),
+                                                   ("removed_merchants", "merchant(s) no longer in the main app"),
+                                                   ("removed_locations", "location(s) no longer in the main app")]
+               if s.get(k)]
+    return text + (": " + ", ".join(changes) if changes else ", no changes") + "."
+
 
 def page_businesses(ctx: Ctx) -> None:
-    """Page "Businesses": the businesses records are imported for, with the main system's ID for each."""
-    st.header("Businesses")
-    st.caption("Each business's **ID must be the same as in the main system**: it is how the two will be connected "
-               "later. Every import is for one business.")
+    """Page "Merchants": the main app's merchants and locations (records.merchants), and loading them.
+
+    They are never typed in here: the automatic load from the main app's ClickHouse (when CLICKHOUSE_* are set, and
+    with the button), or a CSV exported in the ClickHouse console and uploaded here.
+    """
+    st.header("Merchants")
+    st.caption("The main app's merchants and their locations, with the main app's IDs. Every import is for one "
+               "location; a tag is for one merchant. They come from the main app and can't be edited here.")
+    if done := ss.pop("merchants_done", None):   # what the button or the file just loaded (see below)
+        st.success(done)
+    loaded = ctx.records.merchants_loaded()
+    if loaded:
+        st.caption(f"Last loaded {_when(datetime.fromisoformat(loaded['at']), ctx.tz)} from {loaded['source']}"
+                   + (f" by {loaded['by']}" if loaded.get("by") else "") + f": {_load_summary(loaded)}")
+    refresher = ctx.merchants
+    if refresher is not None and refresher.configured:
+        if refresher.last_error:
+            st.error(f"The last automatic load failed: {refresher.last_error}")
+        if st.button("Load from the main app now", type="primary",
+                     help="Reads the merchants and locations from the main app's ClickHouse (it also happens by "
+                          "itself, every MERCHANTS_REFRESH_MINUTES)."):
+            try:
+                with st.spinner("Reading the merchants…"):
+                    ss.merchants_done = _load_summary(refresher.refresh(ctx.user["username"]))
+                st.rerun()   # so the page shows the new lists and the time of this load
+            except ValueError as exc:
+                st.error(str(exc))
+    with st.expander("Load from a file", expanded=not loaded and not (refresher and refresher.configured)):
+        st.markdown("Until the app can read the main app's ClickHouse by itself (CLICKHOUSE_URL, _USER and "
+                    "_PASSWORD in `.env`): in the ClickHouse console, run this query, export the result as **CSV** "
+                    "(with its column names) and upload it here. Merchants and locations that are no longer in "
+                    "the list are kept for their records but no longer offered.")
+        st.code(MERCHANTS_QUERY, language="sql")
+        up = st.file_uploader("Merchants and locations (CSV)", type=["csv", "tsv", "txt"], key="merchants_file")
+        if st.button("Load this file", disabled=up is None):
+            try:
+                merchants, locations = parse_rows(rows_from_file(up.getvalue()), start=2)
+                ss.merchants_done = _load_summary(ctx.records.load_merchants(merchants, locations,
+                                                                             f"the file {up.name}",
+                                                                             ctx.user["username"]))
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
     businesses = ctx.records.list_businesses()
-    if businesses:
-        st.dataframe(pd.DataFrame([{"ID": b["id"], "Name": b["name"], "Records": b["records"],
-                                    "Imports": b["imports"], "Tags": b["tags"], "Notes": b["notes"],
-                                    "Added": _when(b["created_at"], ctx.tz), "Added by": b["created_by"] or "—"}
-                                   for b in businesses]),
-                     hide_index=True, width="stretch")
-    else:
-        st.info("No businesses yet. Add the first one below.")
-    c1, c2 = st.columns(2)
-    with c1, st.form("add_business", clear_on_submit=True):
-        st.markdown("**Add a business**")
-        bid = st.text_input("ID (as in the main system)")
-        name = st.text_input("Name")
-        notes = st.text_input("Notes (optional)")
-        if st.form_submit_button("Add business", type="primary"):
-            try:
-                ctx.records.add_business(bid, name, notes, ctx.user["username"])
-                st.rerun()
-            except StoreError as exc:
-                st.error(str(exc))
     if not businesses:
+        st.info("No merchants yet: load them as described above.")
         return
-    with c2:
-        pick = st.selectbox("Change a business", [b["id"] for b in businesses],
-                            format_func=lambda i: next(_biz_label(b) for b in businesses if b["id"] == i),
-                            key="biz_edit_pick")
-        b = next(x for x in businesses if x["id"] == pick)
-        with st.form(f"edit_business_{pick}"):
-            new_id = st.text_input("ID", value=b["id"], help="Correcting it updates its imports, records and tags.")
-            name = st.text_input("Name", value=b["name"])
-            notes = st.text_input("Notes", value=b["notes"])
-            if st.form_submit_button("Save"):
-                try:
-                    ctx.records.update_business(pick, new_id, name, notes)
-                    st.rerun()
-                except StoreError as exc:
-                    st.error(str(exc))
-        if st.button("Delete this business", disabled=bool(b["imports"] or b["tags"]),
-                     help="Only a business without imports and tags can be deleted."):
-            try:
-                ctx.records.delete_business(pick)
-                st.rerun()
-            except StoreError as exc:
-                st.error(str(exc))
+    locations = ctx.records.list_locations()
+    tabs = st.tabs([f"Merchants ({sum(b['removed_at'] is None for b in businesses):,})",
+                    f"Locations ({sum(x['removed_at'] is None for x in locations):,})"])
+    with tabs[0]:
+        st.dataframe(pd.DataFrame([{
+            "ID": b["id"], "Merchant": b["name"], "Status": b["status"],
+            "Locations": b["locations"], "Imports": b["imports"], "Records": b["records"], "Tags": b["tags"],
+            "In the main app": "no" if b["removed_at"] is not None else "yes"} for b in businesses]),
+            hide_index=True, width="stretch", column_config={"ID": st.column_config.TextColumn(width="small")})
+        none = [b for b in businesses if not b["locations"] and b["removed_at"] is None and b["status"] == "active"]
+        if none:
+            st.caption(f"{len(none)} merchant(s) have no location in the main app, so nothing can be imported for "
+                       "them until one is added there: " + ", ".join(_biz_label(b) for b in none) + ".")
+    with tabs[1]:
+        st.dataframe(pd.DataFrame([{
+            "Merchant": f"{x['business_id']} · {x['business_name']}", "Location": x["name"], "Address": x["address"],
+            "Kind": x["kind"], "In the main app": "no" if x["removed_at"] is not None else "yes",
+            "Location ID": x["id"]} for x in locations]), hide_index=True, width="stretch")
 
 
 # ---------------------------------------------------------------------------------------------------- Services
