@@ -154,4 +154,4 @@ def test_saved_state_is_plain_json(app_store):
     run_app(did)
     raw = (app_store.drafts_root / did / "state.json").read_text()
     assert set(json.loads(raw)) == {"read_args", "mapping", "map_meta", "template_name", "timezone", "ai_used",
-                                    "remember", "business", "service"}
+                                    "remember", "business", "location", "service"}
