@@ -81,6 +81,7 @@ def compare_file(name: str, data: bytes, target, records_schema, rs: RecordStore
     result = convert(rr.df, records_schema, mr, row_numbers=rows)
     biz = f"P{hashlib.sha1(name.encode()).hexdigest()[:10]}"
     rs.add_business(biz, name)
+    rs.add_location(f"{biz}-loc", biz, "Main")
     imp = rs.create_import(biz, sid, name, hashlib.sha1(data).hexdigest(), rr.sheet, "parity")
     RecordSink(rs, None).save(0, _Rec(imp, mr), rr, result, records_schema)
     tag = rs.create_tag(biz, "all")
