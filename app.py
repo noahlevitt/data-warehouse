@@ -1,6 +1,6 @@
 """Customer Records — internal web app (the Streamlit entry point). Built on the file converter (0.21.2).
 
-Pages: New import · Imports (tracker, progress, results, side-by-side comparison) · Find · Tags · Businesses ·
+Pages: New import · Imports (tracker, progress, results, side-by-side comparison) · Find · Tags · Merchants ·
 Services · Templates · Fields · Users (admins only, when logins are on)
 
 Run locally:   ./run_local.sh   (needs PostgreSQL; see README.md → Database)
@@ -8,11 +8,11 @@ Run on server: docker compose up -d   (see README.md)
 
 What it does
 ------------
-A user picks the business and service, uploads a customer/contact file (CSV, TSV, TAB, TXT, XLSX, XLSM, XLSB,
+A user picks the merchant, location and service, uploads a customer/contact file (CSV, TSV, TAB, TXT, XLSX, XLSM, XLSB,
 XLS, ODS) and reviews how its columns map to the record fields of schemas/records_schema.yaml. The import is
 converted exactly as the file converter does (10-digit US phone numbers, dates in any format, 1600 for birthdays
 without a year, consent only when a person maps it) and every file row is stored as a record in PostgreSQL
-(records.importer). Records are found with FileMaker-style requests (Find), collected in tags (one business per
+(records.importer). Records are found with FileMaker-style requests (Find), collected in tags (one merchant per
 tag), and a tag exports its unique phone numbers in the converter's import format (schemas/target_schema.yaml).
 The conversion rules live in the `converter` package, the records in the `records` package; this file is the web
 UI on top of both, and the new pages are drawn by records/ui.py. Claude is optional and only called when someone
@@ -31,7 +31,8 @@ How this file is organised (top to bottom)
    the mistake check and Claude value fixes).
 5. The Templates, Fields and Users pages (Number history is the converter's and not shown: records replace it).
 6. Navigation: st.navigation picks the page from the URL, the sidebar is drawn, and nav.run() runs the page.
-   Find, Tags, Businesses and Services are records/ui.py functions, given a records.ui.Ctx.
+   Find, Tags, Merchants and Services are records/ui.py functions, given a records.ui.Ctx. Merchants and their
+   locations are the main app's (records.merchants; the database table keeps its 1.0 name, businesses).
 
 How a request flows
 -------------------
@@ -41,14 +42,14 @@ the run, the pages are registered, and nav.run() calls the one page function for
 must survive between runs lives in st.session_state (aliased `ss` below): the uploaded file and its read result,
 the mapping being reviewed, Claude results, and the "version" counters described next.
 
-New import: business + service → upload → load_and_map() reads the file, profiles the columns and suggests a
-mapping (saved template, then rules, then optionally Claude) → the reviewer edits it in two data editors (the field
-grid, and "Columns in your file"), optionally applies notes with Claude or runs a mistake check → start_import()
-saves the template, registers the import in PostgreSQL (business, service, file), creates the job record plus a
-stored copy of the file, and hands the id to the runner → the browser is sent to that import's page. The
-conversion itself runs in a worker process (records.runner runs converter.jobs.run_import there, with
-records.importer.RecordSink storing the records), which writes progress to data/converter.db; the Imports pages poll it with st.fragment(run_every=...)
-until it finishes.
+New import: merchant + location + service → upload → load_and_map() reads the file, profiles the columns and
+suggests a mapping (saved template, then rules, then optionally Claude) → the reviewer edits it in two data editors
+(the field grid, and "Columns in your file"), optionally applies notes with Claude or runs a mistake check →
+start_import() saves the template, registers the import in PostgreSQL (merchant, location, service, file), creates
+the job record plus a stored copy of the file, and hands the id to the runner → the browser is sent to that
+import's page. The conversion itself runs in a worker process (records.runner runs converter.jobs.run_import there,
+with records.importer.RecordSink storing the records), which writes progress to data/converter.db; the Imports
+pages poll it with st.fragment(run_every=...) until it finishes.
 
 Two databases: data/converter.db (SQLite, as in the converter) holds the app's own state — import jobs and their
 progress, templates, drafts, users, display preferences. PostgreSQL holds the business data — businesses,
@@ -102,6 +103,7 @@ from records import ui as records_ui
 from records.config import get_records_settings
 from records.db import Database, DatabaseError, ensure_database
 from records.importer import RecordSink
+from records.merchants import MerchantRefresher
 from records.runner import ProcessImportRunner
 from records.store import RecordStore
 
@@ -277,6 +279,19 @@ def get_runner() -> ProcessImportRunner:
 
 
 @st.cache_resource
+def get_merchant_refresher() -> MerchantRefresher:
+    """Return the one loader of the main app's merchants and locations (records.merchants.MerchantRefresher).
+
+    With CLICKHOUSE_URL / _USER / _PASSWORD set it reads them from the main app's ClickHouse at start and then every
+    MERCHANTS_REFRESH_MINUTES, in a background thread; without them it does nothing, and they are loaded from a file
+    on the Merchants page.
+    """
+    db, _ = get_records_db()
+    return MerchantRefresher(RecordStore(db), rsettings.clickhouse_url, rsettings.clickhouse_user,
+                             rsettings.clickhouse_password, rsettings.merchants_refresh_minutes)
+
+
+@st.cache_resource
 def _schema_cache(path: str, mtime: float) -> TargetSchema:
     """Load and validate the schema YAML at `path` (the record fields, or the export format).
 
@@ -359,6 +374,9 @@ except (DatabaseError, ValueError) as exc:  # PostgreSQL not running, or a recor
     st.stop()
 records = RecordStore(rdb)
 runner = get_runner()
+# The main app's merchants and locations: loaded from its ClickHouse in the background when due (CLICKHOUSE_*).
+merchant_refresher = get_merchant_refresher()
+merchant_refresher.maybe_refresh()
 assistant = get_assistant()
 # Before sign-in there is no user preference yet: apply the mode last chosen in this browser (if any), so the login
 # page already matches.
@@ -447,7 +465,8 @@ def draft_state() -> dict:
             "mapping": ss.mapping.model_dump(mode="json"), "map_meta": ss.map_meta,
             "template_name": ss.get(template_key(), ss.get("template_name")), "timezone": ss.get("timezone"),
             "ai_used": bool(ss.get("ai_used")), "remember": ss.get("remember_mapping", True),
-            "business": ss.get("imp_business"), "service": ss.get("imp_service")}
+            "business": ss.get("imp_business"), "location": ss.get("imp_location"),
+            "service": ss.get("imp_service")}
 
 
 def save_draft() -> None:
@@ -508,9 +527,11 @@ def restore_draft(draft_id: str) -> None:
     ss.timezone = saved.get("timezone") if saved.get("timezone") in ZONE_LABEL else "America/New_York"
     ss.ai_used = bool(saved.get("ai_used"))
     ss.remember_pref = bool(saved.get("remember", True))
-    # Business and service chosen before the refresh (Customer Records), unless chosen again since.
+    # Merchant, location and service chosen before the refresh (Customer Records), unless chosen again since.
     if saved.get("business") and not ss.get("imp_business"):
         ss.imp_business = saved["business"]
+        if saved.get("location"):
+            ss.imp_location = saved["location"]
     if saved.get("service") and not ss.get("imp_service"):
         ss.imp_service = saved["service"]
     ss.multi_cells, ss.pending, ss.notes_result, ss.check_result, ss.edit_errors = {}, None, None, None, []
@@ -666,10 +687,10 @@ def start_import() -> int:
     - A new import row is created in the database with status "queued", and a copy of the uploaded file is
       written to data/imports/<id>/. The import stores a snapshot of the target schema (schema_json), so its
       results still make sense after someone edits the YAML.
-    - The id is handed to the background runner, which converts the file in a worker thread. This function
+    - The id is handed to the background runner, which converts the file in a worker process. This function
       returns straight away; the page then switches to the import's detail view to follow its progress.
-    - Customer Records: the import is first registered in PostgreSQL with the chosen business and service and the
-      file's SHA-1 (records.store.create_import, status "queued"); its id goes into the job's read options
+    - Customer Records: the import is first registered in PostgreSQL with the chosen merchant, location and service
+      and the file's SHA-1 (records.store.create_import, status "queued"); its id goes into the job's read options
       ("records_import_id"), where the runner's sink finds it to store the records.
     """
     rr = ss.read
@@ -689,7 +710,7 @@ def start_import() -> int:
                             schema.name, user["username"])
         store.mark_template_used(tpl_name)
     rec_id = records.create_import(ss.imp_business, int(ss.imp_service), ss.file_name, ss.file_sig[1], rr.sheet,
-                                   user["username"])
+                                   user["username"], location_id=ss.imp_location)
     import_id = store.create_import(
         username=user["username"], filename=ss.file_name, data=ss.file_bytes, schema_label=schema.label,
         schema_json=schema.model_dump_json(), mapping=ss.mapping,
@@ -720,7 +741,8 @@ def rerun_import(rec: ImportRecord, overrides: dict | None = None, ai_used: bool
     format. The read options (sheet, header row, client time zone) are reused as they were. Writes a new import
     row and file copy to the database / data folder, queues it on the runner, and returns the new id.
 
-    Customer Records: the re-run is registered as a new import in PostgreSQL for the same business and service.
+    Customer Records: the re-run is registered as a new import in PostgreSQL for the same merchant, location and
+    service.
     Callers only offer a re-run when the import has no records stored (it didn't complete, or its records were
     deleted; see can_rerun), so a re-run never stores the same rows twice.
     """
@@ -732,7 +754,7 @@ def rerun_import(rec: ImportRecord, overrides: dict | None = None, ai_used: bool
         merged.setdefault(k, {}).update(v)
     old = records.get_import(int(rec.read_options["records_import_id"]))
     rec_id = records.create_import(old["business_id"], old["service_id"], rec.filename, old["file_sha1"],
-                                   rec.read_options.get("sheet"), user["username"])
+                                   rec.read_options.get("sheet"), user["username"], location_id=old["location_id"])
     new_id = store.create_import(
         username=user["username"], filename=rec.filename, data=data, schema_label=schema.label,
         schema_json=schema.model_dump_json(), mapping=mapping or rec.mapping,
@@ -747,17 +769,24 @@ def rerun_import(rec: ImportRecord, overrides: dict | None = None, ai_used: bool
 def can_rerun(rec: ImportRecord) -> tuple[bool, str]:
     """Whether an import can be re-run, and if not, why (Customer Records).
 
-    It needs its stored original file, a business and service (imports made in Customer Records have them), and no
-    records stored: a completed import's records must be deleted first, or its rows would be stored twice.
+    It needs its stored original file, a merchant, location and service (imports made in Customer Records have
+    them; one from before 1.6.0 has no location, which is taken when its merchant has only one), a merchant and
+    location still in the main app, and no records stored: a completed import's records must be deleted first, or
+    its rows would be stored twice.
     """
     if rec.files_purged or not store.source_path(rec).exists():
         return False, "The original file is no longer stored, so this import can't be re-run."
     rid = rec.read_options.get("records_import_id")
     if rid is None:
-        return False, "This import has no business and service, so it can't be re-run here."
+        return False, "This import has no merchant and service, so it can't be re-run here."
     imp = records.get_import(int(rid))
     if imp is None:
-        return False, "This import's business or service no longer exists."
+        return False, "This import's merchant or service no longer exists."
+    current = {x["id"] for x in records.list_locations([imp["business_id"]], current_only=True)}
+    if imp["location_id"] not in current and not (imp["location_id"] is None and len(current) == 1):
+        return False, ("This import's merchant or location is no longer in the main app (or the import is from "
+                       "before locations and its merchant has several), so it can't be re-run. Import the file "
+                       "again from New import.")
     if imp["status"] == "completed":
         return False, ("This import's records are stored. To run it again, delete its records first (below), "
                        "so they aren't stored twice.")
@@ -800,7 +829,8 @@ def page_new_import() -> None:
     if ss.pop("draft_missing", False):
         st.caption("The mapping in progress from before the reload isn't kept any more (it was imported, cleared, "
                    "or unchanged for 24 hours). Upload the file again.")
-    # After the draft is restored: it may set the business and service, which must happen before their boxes exist.
+    # After the draft is restored: it may set the merchant, location and service, which must happen before their
+    # boxes exist.
     _business_and_service()
 
     top = st.columns([4, 1], vertical_alignment="bottom")
@@ -832,7 +862,7 @@ def page_new_import() -> None:
         load_and_map()
 
     if not ss.get("file_name"):
-        st.info("Choose the business and service, then upload a CSV or Excel file. Columns are matched "
+        st.info("Choose the merchant, location and service, then upload a CSV or Excel file. Columns are matched "
                 "automatically and you review the mapping; the import then runs in the background and appears "
                 "under **Imports**, where you can follow its progress and compare the original and cleaned values "
                 "side by side. Every row of the file becomes a record you can search under **Find**.")
@@ -843,10 +873,10 @@ def page_new_import() -> None:
     rr = ss.read
     df = rr.df
 
-    # The same file already imported for this business: say so (importing it again stores its rows twice).
+    # The same file already imported for this merchant: say so (importing it again stores its rows twice).
     if ss.get("imp_business"):
         for prev in records.same_file_imports(ss.imp_business, ss.file_sig[1]):
-            st.warning(f"This exact file was already imported for this business: import #{prev['job_id']} "
+            st.warning(f"This exact file was already imported for this merchant: import #{prev['job_id']} "
                        f"({prev['service_name']}, {prev['records']:,} records). Importing it again stores its rows "
                        "a second time.")
 
@@ -1005,10 +1035,10 @@ def page_new_import() -> None:
     if problems:
         st.warning("Fix before importing: " + "; ".join(f"**{schema.field(k).header}** — {v}"
                                                         for k, v in problems.items()))
-    # Customer Records: every import is for one business and one service (chosen at the top of the page).
-    if not (ss.get("imp_business") and ss.get("imp_service")):
-        problems = dict(problems, _business="choose the business and service at the top of the page")
-        st.warning("Choose the **business** and **service** at the top of the page before importing.")
+    # Customer Records: every import is for one location of a merchant and one service (chosen at the top).
+    if not (ss.get("imp_business") and ss.get("imp_location") and ss.get("imp_service")):
+        problems = dict(problems, _business="choose the merchant, location and service at the top of the page")
+        st.warning("Choose the **merchant**, **location** and **service** at the top of the page before importing.")
     c1, c2, c3 = st.columns([1.2, 2.5, 1.3], vertical_alignment="bottom")
     # Files without a header row don't use templates at all: their stand-in column names (Column 1, Column 2…) say
     # nothing about the layout, so a template could only be matched to another client's file with as many columns.
@@ -1034,28 +1064,58 @@ def page_new_import() -> None:
 
 
 def _business_and_service() -> None:
-    """Customer Records: the business and service every import is for, chosen at the top of New import.
+    """Customer Records: the merchant, location and service every import is for, chosen at the top of New import.
 
-    The choices (ss.imp_business: business ID, ss.imp_service: service id) stay for the next file, since several
-    files of one business are often imported in a row. Only active services are offered. When there are no
-    businesses or services yet, the page says where to add them.
+    The choices (ss.imp_business: merchant ID, ss.imp_location: location ID, ss.imp_service: service id) stay for the
+    next file, since several files of one merchant are often imported in a row. Only the main app's current
+    merchants and locations are offered (records.merchants), and only active services. A merchant with one location
+    gets it filled in; one without a location can't be imported for, and the page says why.
     """
-    businesses = records.list_businesses()
+    businesses = [b for b in records.list_businesses() if b["removed_at"] is None and b["status"] == "active"]
     services = records.list_services(active_only=True)
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     ids = [b["id"] for b in businesses]
     names = {b["id"]: f"{b['id']} · {b['name']}" for b in businesses}
     if ss.get("imp_business") not in ids:
         ss.pop("imp_business", None)
-    c1.selectbox("Business", ids, index=None, key="imp_business", format_func=names.get,
-                 placeholder="Choose the business" if ids else "No businesses yet — add them under Businesses",
-                 help="The business these customers belong to (its ID is the main system's).")
+    c1.selectbox("Merchant", ids, index=None, key="imp_business", format_func=names.get,
+                 placeholder="Choose the merchant" if ids else "No merchants yet — load them under Merchants",
+                 help="The main app's merchant these customers belong to.")
+    locations = records.list_locations([ss.imp_business], current_only=True) if ss.get("imp_business") else []
+    lids = [x["id"] for x in locations]
+    lnames = {x["id"]: records_ui.location_label(x, merchant=False) for x in locations}
+    chosen = ss.get("imp_location")
+    if chosen not in lids:
+        ss.pop("imp_location", None)
+        old = records.location(chosen) if chosen else None
+        if old and old["business_id"] == ss.get("imp_business"):
+            # The location chosen for this merchant has left the main app's list (a load since it was chosen, or
+            # a draft restored later). Never put the file on another location without asking: no filling in.
+            ss.imp_location_lost = {"merchant": old["business_id"], "label": records_ui.location_label(old, False)}
+    lost = ss.get("imp_location_lost")
+    if lost and (ss.get("imp_location") or lost["merchant"] != ss.get("imp_business")):
+        ss.pop("imp_location_lost")   # chosen again, or another merchant
+        lost = None
+    if len(lids) == 1 and not lost:
+        ss.imp_location = lids[0]
+    c2.selectbox("Location", lids, index=None, key="imp_location", format_func=lnames.get, disabled=not lids,
+                 placeholder=("Choose the location" if lids else "No location in the main app"
+                              if ss.get("imp_business") else "Choose the merchant first"),
+                 help="The merchant's location this file is for (a corporate account has several). Finds can then "
+                      "look at one location.")
     sids = [s["id"] for s in services]
     snames = {s["id"]: s["name"] for s in services}
     if ss.get("imp_service") not in sids:
         ss.pop("imp_service", None)
-    c2.selectbox("Service", sids, index=None, key="imp_service", format_func=snames.get,
+    c3.selectbox("Service", sids, index=None, key="imp_service", format_func=snames.get,
                  placeholder="Choose the service" if sids else "No services yet — add them under Services")
+    if lost:
+        st.warning(f"The location chosen before, **{lost['label']}**, is no longer in the main app. Choose the "
+                   "location again." if lids else f"The location chosen before, **{lost['label']}**, is no longer in "
+                   "the main app.")
+    if ss.get("imp_business") and not lids:
+        st.warning(f"Merchant {names[ss.imp_business]} has no location in the main app, so nothing can be imported "
+                   "for it. Add its location there, then load the merchants again (Merchants page).")
 
 
 # Column headers of the "Columns in your file" table (one row per column of the uploaded file).
@@ -1405,12 +1465,13 @@ def _import_list(mine: bool, statuses: list[str], search: str, polling: bool) ->
     if not recs:
         st.info("No imports yet." if not (mine or statuses or search) else "No imports match these filters.")
         return
-    # Customer Records: each job's business, service and stored records, from PostgreSQL.
+    # Customer Records: each job's merchant, location, service and stored records, from PostgreSQL.
     linked = records.imports_for_jobs([r.id for r in recs])
     table = pd.DataFrame([{
         "#": r.id,
         "File": r.filename,
-        "Business": f"{linked[r.id]['business_id']} · {linked[r.id]['business_name']}" if r.id in linked else "",
+        "Merchant": f"{linked[r.id]['business_id']} · {linked[r.id]['business_name']}" if r.id in linked else "",
+        "Location": (linked[r.id]["location_name"] or "") if r.id in linked else "",
         "Service": linked[r.id]["service_name"] if r.id in linked else "",
         "By": r.username,
         "Status": status_text(r) + (" · records deleted" if linked.get(r.id, {}).get("status") == "deleted" else ""),
@@ -1463,7 +1524,9 @@ def page_import_detail(import_id: int) -> None:
     st.header(f"Import #{rec.id} · {rec.filename}")
     linked = records.imports_for_jobs([rec.id]).get(rec.id)
     if linked:
-        st.markdown(f"**{linked['business_id']} · {linked['business_name']}** · {linked['service_name']}")
+        st.markdown(f"**{linked['business_id']} · {linked['business_name']}**"
+                    + (f" · {linked['location_name']}" if linked.get("location_name") else "")
+                    + f" · {linked['service_name']}")
     meta = [f"by **{rec.username}**", f"uploaded {fmt_dt(rec.created_at, TZ)}", fmt_size(rec.file_size),
             f"fields: {rec.schema_label}"]
     if rec.template_name:
@@ -1533,7 +1596,8 @@ def _rerun_button(rec: ImportRecord) -> None:
         st.caption(why)
         return
     if st.button("↻ Re-run this import", help="Runs the same original file and mapping again with the current "
-                                              "record fields, for the same business and service. Creates a new "
+                                              "record fields, for the same merchant, location and service. "
+                                              "Creates a new "
                                               "import."):
         open_import(rerun_import(rec))
 
@@ -1981,8 +2045,8 @@ def page_templates() -> None:
     """
     st.header("Saved templates")
     st.caption("A template remembers how one file layout maps to the record fields. When a file with the same "
-               "columns is uploaded, its template is applied automatically (the business and service are chosen "
-               "for each import).")
+               "columns is uploaded, its template is applied automatically (the merchant, location and service "
+               "are chosen for each import).")
     templates = store.list_templates(schema.name)
     if not templates:
         st.info("No templates yet. They are saved when you start an import with 'Remember this mapping' on.")
@@ -2143,7 +2207,7 @@ def page_users() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Pages: Find, Tags, Businesses, Services (Customer Records; drawn by records/ui.py)
+# Pages: Find, Tags, Merchants, Services (Customer Records; drawn by records/ui.py)
 # ---------------------------------------------------------------------------
 
 def page_find() -> None:
@@ -2157,7 +2221,7 @@ def page_tags() -> None:
 
 
 def page_businesses() -> None:
-    """Page "Businesses": add and correct businesses (records.ui.page_businesses)."""
+    """Page "Merchants": the main app's merchants and locations, and loading them (records.ui.page_businesses)."""
     records_ui.page_businesses(ctx)
 
 
@@ -2176,14 +2240,14 @@ def page_services() -> None:
 _landing = os.getenv("DEFAULT_PAGE", "new")  # "new", "imports" or "find": which page opens first
 # What records/ui.py's pages need from here (the pages themselves are filled in below, once they exist).
 ctx = records_ui.Ctx(db=rdb, records=records, schema=schema, export=export_schema, user=user, tz=TZ,
-                     open_import=open_import)
+                     open_import=open_import, merchants=merchant_refresher)
 # url_path is the address of each page (e.g. /imports?id=12), so links and bookmarks keep working.
 PAGE_NEW = st.Page(page_new_import, title="New import", icon="⬆️", url_path="new",
                    default=_landing not in ("imports", "find"))
 PAGE_IMPORTS = st.Page(page_imports, title="Imports", icon="📋", url_path="imports", default=_landing == "imports")
 PAGE_FIND = st.Page(page_find, title="Find", icon="🔎", url_path="find", default=_landing == "find")
 PAGE_TAGS = st.Page(page_tags, title="Tags", icon="🏷️", url_path="tags")
-PAGE_BUSINESSES = st.Page(page_businesses, title="Businesses", icon="🏪", url_path="businesses")
+PAGE_BUSINESSES = st.Page(page_businesses, title="Merchants", icon="🏪", url_path="merchants")
 PAGE_SERVICES = st.Page(page_services, title="Services", icon="🧾", url_path="services")
 PAGE_TEMPLATES = st.Page(page_templates, title="Templates", icon="🧩", url_path="templates")
 PAGE_SCHEMA = st.Page(page_schema, title="Fields", icon="🎯", url_path="fields")
