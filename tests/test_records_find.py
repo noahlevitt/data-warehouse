@@ -17,7 +17,7 @@ from records.fields import find_fields
 from records.store import RecordStore
 
 from .conftest import drop_database, fresh_database
-from .records_util import import_file
+from .records_util import ensure_business, import_file
 
 TOAST = ("First Name,Last Name,Phone,Email,City,State,Zip,Visits,Total Spend,Last Visit,Birthday,Created At,Points,"
          "Notes\n") + """John,Smith,516-555-0100,john@x.com,Brooklyn,NY,11201,5,100.50,10/09/2026 3:45 PM,9/12,2024-01-05,10,vip
@@ -41,8 +41,8 @@ def data(pg_server, records_schema, tmp_path_factory):
     db.setup(records_schema)
     rs = RecordStore(db)
     jobs = Store(tmp_path_factory.mktemp("jobs") / "c.db")
-    rs.add_business("1001", "Krave It Bayside")
-    rs.add_business("2002", "Tara Mor")
+    ensure_business(rs, "1001", "Krave It Bayside")
+    ensure_business(rs, "2002", "Tara Mor")
     import_file(rs, jobs, records_schema, "toast_guests.csv", TOAST, business="1001", service="Toast export")
     import_file(rs, jobs, records_schema, "square.csv", SQUARE, business="2002", service="Square")
     tag = rs.create_tag("1001", "Promo")
@@ -352,7 +352,7 @@ def test_counts_and_csv(data):
     assert F.counts(rs.db, cond, params) == {"records": 5, "no_phone": 1, "businesses": 1, "numbers": 4}
     csv = F.found_set_csv(rs.db, schema, cond, params).decode("utf-8-sig")
     lines = csv.splitlines()
-    assert len(lines) == 6 and lines[0].startswith("Record ID,Record created,Business ID,Business,Service,Import #")
+    assert len(lines) == 6 and lines[0].startswith("Record ID,Record created,Merchant ID,Merchant,Location ID,Location,Service,Import #")
     assert lines[1].split(",")[1].startswith(datetime.now(ZoneInfo("America/New_York")).strftime("%m/%d/%Y"))
     assert "'=HYPERLINK" not in csv  # Notes is not a field: not in the CSV
     assert "09/12/1600" in csv and ",10/09/2026," in csv and "03:45 PM" not in csv   # the last visit: a day
