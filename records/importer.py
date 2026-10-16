@@ -193,7 +193,7 @@ class RecordSink:
         """The Customer Records import (``imports.id``) a job belongs to, from its read options."""
         rid = rec.read_options.get("records_import_id")
         if rid is None:
-            raise RuntimeError("This import has no business and service (it was started outside Customer Records)")
+            raise RuntimeError("This import has no merchant and service (it was started outside Customer Records)")
         return int(rid)
 
     def save(self, job_id: int, rec: ImportRecord, rr, result: ConversionResult, schema: TargetSchema) -> dict:
@@ -206,8 +206,8 @@ class RecordSink:
         rows, counts = build_records(schema, rr.df, result, skip)
         fallback = creation_fallback(schema, rec.mapping, rr.df)
         fields = [f for f in schema.fields if column_type(f) is not None]
-        cols = ["import_id", "business_id", "service_id", "file_row", "phone_issue", "issues", "source",
-                "search_text"] + [f.name for f in fields]
+        cols = ["import_id", "business_id", "location_id", "service_id", "file_row", "phone_issue", "issues",
+                "source", "search_text"] + [f.name for f in fields]
         numbers = len({p[0] for r in rows for p in r["phones"]})
         with self.records.db.conn() as c:
             c.execute("DELETE FROM records WHERE import_id = %s", (imp_id,))  # a retried save starts clean
@@ -215,8 +215,8 @@ class RecordSink:
                 sql.SQL(", ").join(sql.Identifier(x) for x in cols))
             with c.cursor().copy(copy_sql) as cp:
                 for r in rows:
-                    cp.write_row([imp_id, imp["business_id"], imp["service_id"], r["file_row"], r["phone_issue"],
-                                  Jsonb(r["issues"]), Jsonb(r["source"]), r["search_text"]]
+                    cp.write_row([imp_id, imp["business_id"], imp["location_id"], imp["service_id"], r["file_row"],
+                                  r["phone_issue"], Jsonb(r["issues"]), Jsonb(r["source"]), r["search_text"]]
                                  + [r["values"][f.name] for f in fields])
             ids = {x["file_row"]: x["id"] for x in c.execute(
                 "SELECT id, file_row FROM records WHERE import_id = %s", (imp_id,)).fetchall()}
