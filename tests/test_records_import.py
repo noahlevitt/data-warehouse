@@ -168,7 +168,7 @@ def test_an_import_without_business_fails_cleanly(rstore, jobs, records_schema):
                              schema_json=records_schema.model_dump_json(), mapping=mapping, read_options={},
                              template_name=None, ai_used=False)
     rec = run_import(jobs, job, RecordSink(rstore, jobs))
-    assert rec.status == "failed" and "business and service" in rec.error
+    assert rec.status == "failed" and "merchant and service" in rec.error
 
 
 def test_cancel_after_saving_removes_the_records(rstore, jobs, records_schema, monkeypatch):
