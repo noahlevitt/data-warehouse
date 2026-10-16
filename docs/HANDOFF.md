@@ -3,8 +3,8 @@
 For whoever picks Customer Records up next: a person, or Claude in a new chat. It records what the code and the
 other documents don't: how changes are made and delivered, the decisions the business made, and what is still open.
 
-**State:** version 1.5.0, the first prototype (see [CHANGELOG.md](CHANGELOG.md)), based on file-converter 0.21.2.
-About 1,250 tests. Repository: github.com/noahlevitt/data-warehouse, with its own git history: it started from the
+**State:** version 1.6.0, the first prototype (see [CHANGELOG.md](CHANGELOG.md)), based on file-converter 0.21.2.
+About 1,270 tests. Repository: github.com/noahlevitt/data-warehouse, with its own git history: it started from the
 converter's files, not from its history (section 5).
 Owner: Noah Levitt. Last updated 2026-10-15. Update this file with every release (section 4 in particular).
 
@@ -37,7 +37,7 @@ something a bug. The conversion engine's own handoff, with the converter project
   `vX.Y.Z` on its last commit (the "Version X.Y.Z" commit), pushed with the branch (`git push origin vX.Y.Z`).
 
 **Checks before a release** (all of them, every time)
-1. The whole test suite: `.venv/bin/python -m pytest -q` (about 1,250 tests, about 3 minutes). PostgreSQL must be
+1. The whole test suite: `.venv/bin/python -m pytest -q` (about 1,270 tests, about 3 minutes). PostgreSQL must be
    installed: the tests start a private server (see `tests/conftest.py`), or set `RECORDS_TEST_DATABASE_URL`.
    Records tests that are *skipped* mean PostgreSQL wasn't found: that is not a pass.
 2. New tests fail on the previous version: copy them into `git worktree add -f /tmp/old vPREVIOUS`, run them there,
@@ -63,8 +63,9 @@ change them only when a converter fix is ported in (section 5).
 **Delivery** (when the changes can't be pushed directly)
 - Changes go to Noah as a git bundle, `data-warehouse-updateN.bundle`, numbered in order. The repository itself
   came as `data-warehouse-1.0.0.bundle` (complete, no prerequisites); 1.0.1 came as update1, 1.0.2 as update2,
-  1.1.0 as update3, 1.2.0 as update4, 1.2.1 as update5, 1.3.0 as update6, 1.3.1 as update7, 1.4.0 as update8 and
-  1.5.0 as update9, so the next is `data-warehouse-update10.bundle`. Update this line with each bundle.
+  1.1.0 as update3, 1.2.0 as update4, 1.2.1 as update5, 1.3.0 as update6, 1.3.1 as update7, 1.4.0 as update8,
+  1.5.0 as update9 and 1.6.0 as update10, so the next is `data-warehouse-update11.bundle`. Update this line with each
+  bundle.
 
   ```bash
   git bundle create ../data-warehouse-updateN.bundle main vX.Y.Z ^vPREVIOUS
@@ -99,10 +100,10 @@ Decided by Noah on 2026-10-14 unless marked otherwise. Don't reverse one without
 | Area | Decision |
 |---|---|
 | What it is | Keep nearly every field of every import as a record; each file row is its own record. Search every field, alone and combined (AND, OR, Omit, as in FileMaker). Put chosen records into tags; a tag is the list of unique numbers imported into the main system. |
-| Businesses and services | Every import is for one business and one service. Businesses are created by hand with the **same ID as in the main system** (the systems will be connected later). Services are a predetermined list. |
-| Database | PostgreSQL (the main system uses PostgreSQL and DuckDB; ClickHouse is being considered for everything later). |
+| Businesses and services | Every import is for one business and one service. Services are a predetermined list. **Businesses (1.6.0) are the main app's merchants and locations**: a merchant is one business with one location, or a corporate account with several locations (one merchant ID, several location IDs); sometimes one business is two merchant IDs. Every import is for one **location**, so a find can look at one location; one import is one location for now (files with a location column later: split by AI or by code, the developer's call; planned: map the column's values to locations). They come from the main app's ClickHouse, where the merchants and locations live (Noah, 2026-10-16). Built in 1.6.0: copies loaded automatically with the app's own ClickHouse user, or from a CSV exported in the console; never typed in. No real data was in Customer Records yet, so starting fresh was fine. |
+| Database | PostgreSQL (the main system uses PostgreSQL and DuckDB, and ClickHouse). **80 million records or more are expected** (Noah, 2026-10-16), so the records move to ClickHouse (option 1 chosen 2026-10-16: records and their numbers in ClickHouse, everything else in PostgreSQL), after a load test of 80M records against PostgreSQL, once write access is granted (2.0). Noah has read access to the main app's ClickHouse (Cloud, 26.6) for now. |
 | Rows without a usable number | Stored as records (searchable), with the reason; never exported. |
-| Tags | One business per tag. Deduplicated (one row per number) when exported. |
+| Tags | One merchant per tag (Noah, 2026-10-16; was one business per tag). Deduplicated (one row per number) when exported. **Tags will be the merchant's segments in the main app**, directly if possible, because the main app can no longer make a segment from a single import (Noah, 2026-10-16). Planned (1.7.0): Customer Records writes each tag's numbers to its own ClickHouse table and the main app gets a segment type that reads it (its `audience_members` is re-evaluated, so rows written there directly would be lost). Needs write access and the lead developer's side. |
 | Export format | The file converter's import format, until the systems are connected. |
 | Consent in exports | Not sent (blank): opt-outs are per business and the main system handles them; once connected, it will know who is opted in or out. Records keep the file's consent. |
 | Before tagging (later) | Deduplicate, check that numbers are cell phones, and remove numbers on the Do Not Call list unless within an 18-month established business relationship. Depends on the main system; not built. |
@@ -149,9 +150,17 @@ Customer Records (the repository is `data-warehouse`), and version 1.0.0.
 
 ## 4. Open items
 
+- **Waiting on the main app's lead developer** (asked by Noah, 2026-10-16): an app user for Customer Records on
+  the main app's ClickHouse (SELECT on `pg.merchants` / `pg.locations`; later a `customer_records` database it may
+  write), the server's IP on the service's access list, and the host; whether `audience_members` is fully rebuilt
+  (a batch of 745 segments on 2026-10-14 21:50) and a segment type reading Customer Records' tags; whether segment
+  evaluation applies consent, Do Not Call and the mobile check; whether Customer Records should also publish every
+  imported row's dates (`generic_csv_import`) or only the tags. Reported to him: 183 segment memberships with
+  numbers that break US numbering rules, and that the console's read-only role may kill queries and write to
+  outside systems.
 - **Questions for Noah**:
-  - The main system: its business IDs (numbers or text?), how opt-outs, last messages and transactions are stored
-    (needed for the Do Not Call / 18-month rule), and whether it should read tags directly instead of files.
+  - The main system: how opt-outs, last messages and transactions are stored (needed for the Do Not Call / 18-month
+    rule). Merchant IDs are whole numbers; phone numbers are stored as 10-digit numbers without the leading 1.
   - The Do Not Call list: which list (national, state, internal), where it comes from, how often it changes.
   - The 18-month established business relationship: counted from which date (last transaction, last visit, last
     inquiry?) and per business or across businesses.
@@ -230,6 +239,19 @@ Customer Records (the repository is `data-warehouse`), and version 1.0.0.
   `IMPORT_WORKERS=` (empty) stops the app (the converter's settings parse it) and a wrong setting shows only
   "ValueError" on the page; signing in lasts as long as the browser tab and a link opens the first page after
   signing in (KNOWN_ISSUES #21).
+- **Independent test of 1.6.0** (check 6, a separate Claude agent, limited at Noah's request to merchants and
+  locations, imports and finds by merchant or location; about 10 minutes): it found one serious defect, fixed and
+  tested before release (`test_a_location_that_leaves_the_main_app_is_never_swapped_for_another`): a location
+  chosen on New import that then left the main app's list was replaced by the merchant's only remaining location, so
+  the file went to the wrong location without a word. Also fixed and tested (`test_records_merchants.py`,
+  `test_records_store.py`): an unexpected ClickHouse answer (rows that aren't rows, an error after the first rows)
+  wasn't said on the page; a spreadsheet's empty trailing row, UTF-16, Excel's `sep=` line and `63.00` were
+  refused; "None"/"Null" were read as empty; location IDs weren't checked as UUIDs and conflicting duplicates
+  weren't refused; error rows weren't the spreadsheet's row numbers; returning merchants and locations were counted
+  as new; statuses other than active/archived were importable; the reset script emptied the database even with a
+  wrong `DATA_DIR`; and two doc errors (hand-typed IDs equal to main app IDs are taken over, not marked removed;
+  imports from before 1.6.0 can be re-run when their merchant has one location). Not covered in its time box:
+  draft restore with a removed location (same code path as the fix), Constrain/Extend with locations in a browser.
 - Limits known and accepted: [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
 ## 5. Taking fixes from the file converter
