@@ -16,7 +16,7 @@ from records.fields import find_fields
 from records.store import RecordStore
 
 from .conftest import drop_database, fresh_database
-from .records_util import import_file
+from .records_util import ensure_business, import_file
 
 GUESTS = """First Name,Last Name,Phone,City,Visits,Last Visit,Birthday
 Zoë,Åberg,516-555-0101,Åre,3,10/09/2026 9:00 AM,9/12
@@ -27,8 +27,8 @@ Pat,C++,516-555-0104,Albany,6,,12/25/1940
 
 
 def load(rs, jobs, schema):
-    rs.add_business("1001", "Krave It Bayside")
-    rs.add_business("5005", "1001 Nights Cafe")
+    ensure_business(rs, "1001", "Krave It Bayside")
+    ensure_business(rs, "5005", "1001 Nights Cafe")
     import_file(rs, jobs, schema, "guests.csv", GUESTS, business="1001")
     import_file(rs, jobs, schema, "nights.csv", "First Name,Phone\nAli,9175550199\n", business="5005")
 
