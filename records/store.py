@@ -1,25 +1,29 @@
-"""Businesses, services, imports, records and tags: every read and write of Customer Records outside finds and
-tag exports (``records.find``, ``records.tags``), which build their own SQL.
+"""Merchants, locations, services, imports, records and tags: every read and write of Customer Records outside
+finds and tag exports (``records.find``, ``records.tags``), which build their own SQL.
 
 Overview
 --------
 :class:`RecordStore` wraps :class:`records.db.Database`. Methods take and return plain Python values (dicts,
-lists, ints) so the web pages and tests stay simple. Errors a person can fix (a business ID that already exists, a
-tag name used twice, a service still in use) raise :class:`StoreError` with a sentence to show.
+lists, ints) so the web pages and tests stay simple. Errors a person can fix (a tag name used twice, a service
+still in use, an import for a merchant without a location) raise :class:`StoreError` with a sentence to show.
 
 Rules enforced here
 -------------------
-* A business ID is the main system's ID, typed in by hand; it can be corrected later (it follows into imports,
-  records and tags). A business or service can only be deleted while nothing refers to it; a service can be
-  deactivated instead (it is then no longer offered on New import, and its records keep it).
-* A tag belongs to one business: :meth:`add_to_tag` only adds that business's records and says how many records
-  of the found set were left out for belonging to another business.
+* Merchants and locations are the main app's (1.6.0, :meth:`load_merchants`); the table of merchants keeps its
+  1.0 name, ``businesses``, and "business" in the code means a merchant. They are never deleted here: one that
+  leaves the main app's list is marked removed and no longer offered.
+* Every import is for one location of its merchant (:meth:`create_import`); its records carry both.
+* A service can only be deleted while nothing refers to it; it can be deactivated instead (it is then no longer
+  offered on New import, and its records keep it).
+* A tag belongs to one merchant: :meth:`add_to_tag` only adds that merchant's records and says how many records
+  of the found set were left out for belonging to another merchant.
 * Every change to a tag is logged in ``tag_events`` (who, when, what, how many records).
 * Deleting an import deletes its records; each tag that loses records gets an event saying so.
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import psycopg
@@ -38,60 +42,125 @@ def _clean(text: str | None) -> str:
 
 
 class RecordStore:
-    """Businesses, services, imports, records and tags in PostgreSQL (see the module docstring)."""
+    """Merchants, locations, services, imports, records and tags in PostgreSQL (see the module docstring)."""
 
     def __init__(self, db: Database):
         """Use ``db`` (already set up)."""
         self.db = db
 
-    # ------------------------------------------------------------------ businesses
+    # ------------------------------------------------------------------ merchants and locations
 
     def list_businesses(self) -> list[dict]:
-        """Every business with its numbers of imports, records and tags, by ID."""
+        """Every merchant (``businesses``) with its status, number of locations, imports, records and tags, by name.
+
+        Merchants no longer in the main app's list (``removed_at`` set) are included, last.
+        """
         return self.db.fetch("""
-            SELECT b.id, b.name, b.notes, b.created_at, b.created_by,
+            SELECT b.id, b.name, b.notes, b.status, b.removed_at, b.synced_at, b.created_at, b.created_by,
+                   (SELECT count(*) FROM locations l WHERE l.business_id = b.id AND l.removed_at IS NULL) AS locations,
                    (SELECT count(*) FROM imports i WHERE i.business_id = b.id AND i.status = 'completed') AS imports,
                    (SELECT count(*) FROM records r WHERE r.business_id = b.id) AS records,
                    (SELECT count(*) FROM tags t WHERE t.business_id = b.id) AS tags
-            FROM businesses b ORDER BY b.id""")
+            FROM businesses b ORDER BY b.removed_at IS NOT NULL, lower(b.name), b.id""")
 
     def business(self, business_id: str) -> dict | None:
-        """One business, or None."""
-        return self.db.fetch_one("SELECT * FROM businesses WHERE id = %s", (business_id,))
+        """One merchant, or None."""
+        return self.db.fetch_one("SELECT * FROM businesses WHERE id = %s", (str(business_id),))
 
     def add_business(self, business_id: str, name: str, notes: str = "", username: str = "") -> None:
-        """Add a business. ``business_id`` is the main system's ID for it (any text; spaces trimmed)."""
-        bid, nm = _clean(business_id), _clean(name)
+        """Add one merchant by hand (tests and scripts; the app loads them with :meth:`load_merchants`)."""
+        bid, nm = _clean(str(business_id)), _clean(name)
         if not bid or not nm:
-            raise StoreError("A business needs an ID (the same as in the main system) and a name.")
+            raise StoreError("A merchant needs an ID (the same as in the main app) and a name.")
         try:
             self.db.execute("INSERT INTO businesses (id, name, notes, created_by) VALUES (%s, %s, %s, %s)",
                             (bid, nm, _clean(notes), username))
         except psycopg.errors.UniqueViolation:
-            raise StoreError(f"A business with ID '{bid}' already exists.") from None
+            raise StoreError(f"A merchant with ID '{bid}' already exists.") from None
 
-    def update_business(self, business_id: str, new_id: str, name: str, notes: str = "") -> None:
-        """Change a business's ID, name or notes. A new ID follows into its imports, records and tags."""
-        nid, nm = _clean(new_id), _clean(name)
-        if not nid or not nm:
-            raise StoreError("A business needs an ID and a name.")
-        try:
-            n = self.db.execute("UPDATE businesses SET id = %s, name = %s, notes = %s WHERE id = %s",
-                                (nid, nm, _clean(notes), business_id))
-        except psycopg.errors.UniqueViolation:
-            raise StoreError(f"A business with ID '{nid}' already exists.") from None
-        if not n:
-            raise StoreError(f"Business '{business_id}' not found.")
+    def add_location(self, location_id: str, business_id: str, name: str, address: str = "",
+                     kind: str = "store") -> None:
+        """Add one location by hand (tests and scripts; the app loads them with :meth:`load_merchants`)."""
+        self.db.execute("INSERT INTO locations (id, business_id, name, address, kind) VALUES (%s, %s, %s, %s, %s)",
+                        (_clean(location_id), str(business_id), _clean(name), _clean(address), _clean(kind)))
 
-    def delete_business(self, business_id: str) -> None:
-        """Delete a business that has no imports and no tags."""
-        used = self.db.fetch_one("""SELECT (SELECT count(*) FROM imports WHERE business_id = %(b)s) AS i,
-                                           (SELECT count(*) FROM tags WHERE business_id = %(b)s) AS t""",
-                                 {"b": business_id})
-        if used["i"] or used["t"]:
-            raise StoreError(f"Business '{business_id}' has {used['i']} import(s) and {used['t']} tag(s); delete "
-                             "those first.")
-        self.db.execute("DELETE FROM businesses WHERE id = %s", (business_id,))
+    def list_locations(self, business_ids: list[str] | None = None, current_only: bool = False) -> list[dict]:
+        """Locations (of these merchants, or all) with their merchant's name, by merchant and location name.
+
+        ``current_only``: only locations still in the main app's list, of active merchants still in it.
+        """
+        where = [sql.SQL("true")]
+        if business_ids is not None:
+            where.append(sql.SQL("l.business_id = ANY(%(b)s)"))
+        if current_only:
+            where.append(sql.SQL("l.removed_at IS NULL AND b.removed_at IS NULL AND b.status = 'active'"))
+        return self.db.fetch(sql.SQL("""
+            SELECT l.*, b.name AS business_name FROM locations l JOIN businesses b ON b.id = l.business_id
+            WHERE {} ORDER BY lower(b.name), b.id, lower(l.name), l.id""").format(sql.SQL(" AND ").join(where)),
+            {"b": [str(x) for x in business_ids or []]})
+
+    def location(self, location_id: str) -> dict | None:
+        """One location with its merchant's name, or None."""
+        return self.db.fetch_one("""SELECT l.*, b.name AS business_name FROM locations l
+                                    JOIN businesses b ON b.id = l.business_id WHERE l.id = %s""", (location_id,))
+
+    def load_merchants(self, merchants: list[dict], locations: list[dict], source: str, username: str = "") -> dict:
+        """Make the merchants and locations those of the main app (records.merchants reads them), in one transaction.
+
+        ``merchants``: {"id", "name", "status"}; ``locations``: {"id", "merchant_id", "name", "address", "kind"}.
+        New ones are added, known ones updated (name, status, address, a location's merchant), and ones missing
+        from the lists are marked removed (``removed_at``): kept, because imports, records and tags refer to them,
+        but no longer offered. One that comes back is offered again ("back"). An empty merchant list changes nothing
+        (a failed export, not a main app without merchants). Returns the counts of each and what changed; the time,
+        source and counts are kept in ``app_meta`` ("merchants_loaded"). A merchant added by hand before 1.6.0 whose
+        ID is a main app merchant ID becomes that merchant (its name replaced), with its imports and records.
+        """
+        if not merchants:
+            raise StoreError("The list has no merchants, so nothing was changed.")
+        ids = [m["id"] for m in merchants]
+        loc_ids = [x["id"] for x in locations]
+        unknown = sorted({x["merchant_id"] for x in locations} - set(ids))
+        if unknown:
+            raise StoreError(f"Locations refer to merchants that aren't in the list ({', '.join(unknown[:5])}); "
+                             "export the merchants and their locations together.")
+        with self.db.conn() as c:
+            known_m = {r["id"]: r["removed_at"] is None
+                       for r in c.execute("SELECT id, removed_at FROM businesses").fetchall()}
+            known_l = {r["id"]: r["removed_at"] is None
+                       for r in c.execute("SELECT id, removed_at FROM locations").fetchall()}
+            with c.cursor() as cur:
+                cur.executemany("""
+                    INSERT INTO businesses (id, name, status, removed_at, synced_at, created_by)
+                    VALUES (%(id)s, %(name)s, %(status)s, NULL, now(), %(by)s)
+                    ON CONFLICT (id) DO UPDATE SET name = excluded.name, status = excluded.status, removed_at = NULL,
+                                                   synced_at = now()""",
+                                [dict(m, by=username) for m in merchants])
+                if locations:
+                    cur.executemany("""
+                        INSERT INTO locations (id, business_id, name, address, kind, removed_at, synced_at)
+                        VALUES (%(id)s, %(merchant_id)s, %(name)s, %(address)s, %(kind)s, NULL, now())
+                        ON CONFLICT (id) DO UPDATE SET business_id = excluded.business_id, name = excluded.name,
+                            address = excluded.address, kind = excluded.kind, removed_at = NULL,
+                            synced_at = now()""", locations)
+            gone_m = c.execute("UPDATE businesses SET removed_at = now() WHERE removed_at IS NULL AND "
+                               "id <> ALL(%s)", (ids,)).rowcount
+            gone_l = c.execute("UPDATE locations SET removed_at = now() WHERE removed_at IS NULL AND "
+                               "id <> ALL(%s)", (loc_ids,)).rowcount
+            summary = {"merchants": len(ids), "locations": len(loc_ids),
+                       "new_merchants": len(set(ids) - set(known_m)), "new_locations": len(set(loc_ids) - set(known_l)),
+                       "back_merchants": sum(known_m.get(i) is False for i in ids),
+                       "back_locations": sum(known_l.get(i) is False for i in loc_ids),
+                       "removed_merchants": gone_m, "removed_locations": gone_l}
+            c.execute("""INSERT INTO app_meta (key, value) VALUES ('merchants_loaded', %s)
+                         ON CONFLICT (key) DO UPDATE SET value = excluded.value""",
+                      (json.dumps(dict(summary, source=source, by=username,
+                                       at=c.execute("SELECT now() AS t").fetchone()["t"].isoformat())),))
+        return summary
+
+    def merchants_loaded(self) -> dict | None:
+        """When, from where and by whom the merchants were last loaded, with the counts (or None: never)."""
+        row = self.db.fetch_one("SELECT value FROM app_meta WHERE key = 'merchants_loaded'")
+        return json.loads(row["value"]) if row else None
 
     # ------------------------------------------------------------------ services
 
@@ -134,26 +203,46 @@ class RecordStore:
     # ------------------------------------------------------------------ imports
 
     def create_import(self, business_id: str, service_id: int, file_name: str, file_sha1: str,
-                      sheet: str | None, username: str) -> int:
-        """Register an import before it runs (status 'queued'); returns its id (``imports.id``)."""
-        if not self.business(business_id):
-            raise StoreError("Choose a business for this import.")
+                      sheet: str | None, username: str, location_id: str | None = None) -> int:
+        """Register an import before it runs (status 'queued'); returns its id (``imports.id``).
+
+        ``location_id``: the location of the merchant ``business_id`` the file is for. Left out, the merchant's only
+        location is used; a merchant with several needs one chosen, and one without any can't be imported for.
+        """
+        biz = self.business(business_id) if business_id else None
+        if not biz:
+            raise StoreError("Choose a merchant for this import.")
+        if biz["removed_at"] is not None or biz["status"] != "active":
+            raise StoreError(f"Merchant {biz['id']} · {biz['name']} is {biz['status']} or no longer in the main "
+                             "app.")
+        current = self.list_locations([biz["id"]], current_only=True)
+        if location_id is None:
+            if not current:
+                raise StoreError(f"Merchant {biz['id']} · {biz['name']} has no location in the main app; add one "
+                                 "there first, then reload the merchants.")
+            if len(current) > 1:
+                raise StoreError("Choose the location this file is for.")
+            location_id = current[0]["id"]
+        elif (location_id := location_id.strip().lower()) not in {x["id"] for x in current}:
+            raise StoreError("Choose one of this merchant's locations.")
         svc = self.db.fetch_one("SELECT active FROM services WHERE id = %s", (service_id,))
         if not svc:
             raise StoreError("Choose a service for this import.")
-        return self.db.fetch_one("""INSERT INTO imports (business_id, service_id, file_name, file_sha1, sheet,
-                                    username) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
-                                 (business_id, service_id, file_name, file_sha1, sheet, username))["id"]
+        return self.db.fetch_one("""INSERT INTO imports (business_id, location_id, service_id, file_name, file_sha1,
+                                    sheet, username) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                                 (biz["id"], location_id, service_id, file_name, file_sha1, sheet, username))["id"]
 
     def set_job(self, import_id: int, job_id: int) -> None:
         """Remember the app's import number (data/converter.db) that runs this import."""
         self.db.execute("UPDATE imports SET job_id = %s WHERE id = %s", (job_id, import_id))
 
     def get_import(self, import_id: int) -> dict | None:
-        """One import with its business and service names."""
+        """One import with its merchant, location and service names (location: None before 1.6.0)."""
         return self.db.fetch_one("""
-            SELECT i.*, b.name AS business_name, s.name AS service_name
+            SELECT i.*, b.name AS business_name, l.name AS location_name, l.address AS location_address,
+                   s.name AS service_name
             FROM imports i JOIN businesses b ON b.id = i.business_id JOIN services s ON s.id = i.service_id
+            LEFT JOIN locations l ON l.id = i.location_id
             WHERE i.id = %s""", (import_id,))
 
     def imports_for_jobs(self, job_ids: list[int]) -> dict[int, dict]:
@@ -161,13 +250,15 @@ class RecordStore:
         if not job_ids:
             return {}
         rows = self.db.fetch("""
-            SELECT DISTINCT ON (i.job_id) i.*, b.name AS business_name, s.name AS service_name
+            SELECT DISTINCT ON (i.job_id) i.*, b.name AS business_name, l.name AS location_name,
+                   s.name AS service_name
             FROM imports i JOIN businesses b ON b.id = i.business_id JOIN services s ON s.id = i.service_id
+            LEFT JOIN locations l ON l.id = i.location_id
             WHERE i.job_id = ANY(%s) ORDER BY i.job_id, i.id DESC""", (job_ids,))
         return {r["job_id"]: r for r in rows}
 
     def same_file_imports(self, business_id: str, file_sha1: str) -> list[dict]:
-        """Completed imports of exactly this file for this business (to warn before importing it twice)."""
+        """Completed imports of exactly this file for this merchant (to warn before importing it twice)."""
         return self.db.fetch("""SELECT i.id, i.job_id, i.file_name, i.completed_at, i.records, s.name AS service_name
                                 FROM imports i JOIN services s ON s.id = i.service_id
                                 WHERE i.business_id = %s AND i.file_sha1 = %s AND i.status = 'completed'
@@ -205,11 +296,13 @@ class RecordStore:
     # ------------------------------------------------------------------ records
 
     def record(self, record_id: int) -> dict | None:
-        """One record with its phone numbers, business, service, import and tags."""
+        """One record with its phone numbers, merchant, location, service, import and tags."""
         rec = self.db.fetch_one("""
-            SELECT r.*, b.name AS business_name, s.name AS service_name, i.file_name, i.job_id, i.sheet
+            SELECT r.*, b.name AS business_name, l.name AS location_name, s.name AS service_name, i.file_name,
+                   i.job_id, i.sheet
             FROM records r JOIN businesses b ON b.id = r.business_id JOIN services s ON s.id = r.service_id
-            JOIN imports i ON i.id = r.import_id WHERE r.id = %s""", (record_id,))
+            JOIN imports i ON i.id = r.import_id LEFT JOIN locations l ON l.id = r.location_id
+            WHERE r.id = %s""", (record_id,))
         if rec is None:
             return None
         rec["phones"] = self.db.fetch("""SELECT phone, position, repaired, original FROM record_phones
@@ -220,16 +313,16 @@ class RecordStore:
         return rec
 
     def totals(self) -> dict:
-        """Counts for the sidebar and empty states: records, businesses, services, tags."""
+        """Counts for the sidebar and empty states: records, merchants (current), services, tags."""
         return self.db.fetch_one("""SELECT (SELECT count(*) FROM records) AS records,
-                                           (SELECT count(*) FROM businesses) AS businesses,
+                                           (SELECT count(*) FROM businesses WHERE removed_at IS NULL) AS businesses,
                                            (SELECT count(*) FROM services WHERE active) AS services,
                                            (SELECT count(*) FROM tags) AS tags""")
 
     # ------------------------------------------------------------------ tags
 
     def list_tags(self, business_id: str | None = None) -> list[dict]:
-        """Tags (optionally of one business) with record and unique-number counts, newest change first."""
+        """Tags (optionally of one merchant) with record and unique-number counts, newest change first."""
         where = sql.SQL("WHERE t.business_id = %(b)s") if business_id else sql.SQL("")
         return self.db.fetch(sql.SQL("""
             SELECT t.id, t.name, t.notes, t.business_id, b.name AS business_name, t.created_at, t.created_by,
@@ -241,7 +334,7 @@ class RecordStore:
             where), {"b": business_id})
 
     def tag(self, tag_id: int) -> dict | None:
-        """One tag with its business name and counts (records, unique numbers, records without a number)."""
+        """One tag with its merchant's name and counts (records, unique numbers, records without a number)."""
         return self.db.fetch_one("""
             SELECT t.*, b.name AS business_name,
                    (SELECT count(*) FROM tag_records tr WHERE tr.tag_id = t.id) AS records,
@@ -252,12 +345,12 @@ class RecordStore:
             FROM tags t JOIN businesses b ON b.id = t.business_id WHERE t.id = %s""", (tag_id,))
 
     def create_tag(self, business_id: str, name: str, notes: str = "", username: str = "") -> int:
-        """Create an empty tag for one business; returns its id. Names are unique per business."""
+        """Create an empty tag for one merchant; returns its id. Names are unique per merchant."""
         nm = _clean(name)
         if not nm:
             raise StoreError("A tag needs a name.")
-        if not self.business(business_id):
-            raise StoreError("Choose the business this tag is for.")
+        if not business_id or not self.business(business_id):
+            raise StoreError("Choose the merchant this tag is for.")
         try:
             with self.db.conn() as c:
                 tid = c.execute("""INSERT INTO tags (business_id, name, notes, created_by) VALUES (%s, %s, %s, %s)
@@ -266,7 +359,7 @@ class RecordStore:
                           (tid, username))
             return tid
         except psycopg.errors.UniqueViolation:
-            raise StoreError(f"Business '{business_id}' already has a tag named '{nm}'.") from None
+            raise StoreError(f"Merchant {business_id} already has a tag named '{nm}'.") from None
 
     def update_tag(self, tag_id: int, name: str, notes: str, username: str = "") -> None:
         """Rename a tag or change its notes."""
@@ -282,7 +375,7 @@ class RecordStore:
                     c.execute("""INSERT INTO tag_events (tag_id, username, action, detail)
                                  VALUES (%s, %s, 'renamed', %s)""", (tag_id, username, f"was '{old['name']}'"))
         except psycopg.errors.UniqueViolation:
-            raise StoreError(f"This business already has a tag named '{nm}'.") from None
+            raise StoreError(f"This merchant already has a tag named '{nm}'.") from None
 
     def delete_tag(self, tag_id: int) -> None:
         """Delete a tag (its records stay; only the list goes)."""
@@ -297,8 +390,8 @@ class RecordStore:
                    detail: str = "") -> dict:
         """Add the records matching ``where`` (a condition on ``records r``, from records.find) to a tag.
 
-        Only records of the tag's business are added. Returns {"added": new records, "already": records that were
-        in the tag already, "other_business": matching records of other businesses, left out}.
+        Only records of the tag's merchant are added. Returns {"added": new records, "already": records that were
+        in the tag already, "other_business": matching records of other merchants, left out}.
         """
         with self.db.conn() as c:
             t = c.execute("SELECT business_id FROM tags WHERE id = %s", (tag_id,)).fetchone()
