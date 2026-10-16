@@ -4,6 +4,28 @@ What changed in each version of Customer Records. The running version is shown i
 is tagged in git (`vX.Y.Z`). The history of the file converter this project is based on is in
 [converter/CHANGELOG.md](converter/CHANGELOG.md).
 
+## 1.6.0 — merchants and locations from the main app
+
+- **Businesses are now the main app's merchants and locations**, with the main app's IDs, instead of being typed
+  in. A merchant is one business with one location, or a corporate account with several. The **Merchants** page
+  (was Businesses) lists them; they are loaded from the main app's ClickHouse, automatically once the app has its
+  own user there (`CLICKHOUSE_URL`, `_USER`, `_PASSWORD`; every hour and with *Load from the main app now*), and
+  until then from a file: copy the query shown on the page, run it in the ClickHouse console, export the result as
+  CSV and upload it. Merchants and locations that leave the main app's list are kept for their records but no
+  longer offered; only active merchants are offered.
+- **New import: Merchant, Location and Service.** A merchant's only location is filled in by itself; a corporate
+  account's location is chosen. A merchant without a location in the main app can't be imported for, and the page
+  says to add one there first. A location that leaves the main app after it was chosen is never swapped for
+  another: the page says so and waits for a location to be chosen. Every record keeps its import's location.
+- **Find: Merchants and Locations** replace Business. A merchant finds all its locations; the Locations picker
+  (shown when there are corporate accounts) finds one or some of them. The found set, its CSV, one record's details
+  and the Imports pages show the location.
+- **Tags are per merchant** (any of its locations), as before per business; exports are named with the merchant ID.
+- The businesses typed in by hand before: one whose ID is a main app merchant ID becomes that merchant (with the main
+  app's name), the others are marked *no longer in the main app*; either way their imports and records have no
+  location. To delete all test data instead, stop the app and run `scripts/reset_records.py --yes` (services,
+  users and templates stay).
+
 ## 1.5.0 — five imports at once, and the shared server
 
 - **Five imports run at the same time** (`IMPORT_WORKERS`, now 5 by default), everyone's together; more wait as
