@@ -13,9 +13,9 @@ setting is used when it handles them, otherwise an explicit collation (records.d
 
 Nothing is ever required: a field left blank isn't searched (records.find ignores blank requests). Before reading a
 criterion, ``…`` (one character, as phones and Macs type it) and ``..`` become the range operator ``...``; four or
-more dots are refused (:func:`normalize`). Every range may leave one end open. Typed Business and Service criteria
-(``business_condition``, kind ``service``) are still understood, for found sets kept from before 1.1.0 and for code;
-the Find page has pickers for them instead.
+more dots are refused (:func:`normalize`). Every range may leave one end open. Typed Business (merchant) and Service
+criteria (``business_condition``, kind ``service``) are still understood, for found sets kept from before 1.1.0 and
+for code; the Find page has pickers for them (and for locations) instead.
 """
 
 from __future__ import annotations
@@ -93,8 +93,8 @@ never times.
 
 **Yes / no** (consent): `yes` · `no` · `=` empty · `*` any value
 
-**Business and Services**: pick them in the request (one or more; empty = any). To leave a service out, pick it in
-an **Omit** request.
+**Merchants, Locations and Services**: pick them in the request (one or more; empty = any). Locations are offered
+when a merchant picked has several. To leave a service or a location out, pick it in an **Omit** request.
 
 Not supported (≠ FileMaker): `!` duplicates, `?` invalid dates, `~` relaxed search — they say so.
 """
@@ -630,7 +630,7 @@ def bool_condition(expr: sql.Composable, text: str, p: Params) -> sql.Composable
 
 
 def business_condition(text: str, p: Params) -> sql.Composable:
-    """Condition on the record's business (see "Business" in the module docstring)."""
+    """Condition on the record's merchant (the ``businesses`` table): its ID (exact) or its name."""
     t = text.strip()
     if t in ("*", "="):
         return TRUE if t == "*" else FALSE
