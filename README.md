@@ -1,7 +1,7 @@
 # Customer Records
 
 Internal web app that keeps every customer row of every imported file as a searchable record. Each import is for one
-**business** (with the same ID as in the main system) and one **service**. Records are found with FileMaker-style
+**location** of a **merchant** of the main app (both with the main app's IDs) and one **service**. Records are found with FileMaker-style
 find requests, collected into **tags**, and a tag exports its unique phone numbers in the file converter's import
 format, ready to import into the main system.
 
@@ -25,7 +25,7 @@ database on first start. On one computer there is no login; the server setup has
 | Document | For | What's in it |
 |---|---|---|
 | This README | everyone | what the tool does, finding records, tags and exports, running it, settings |
-| [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | people using it | step by step: businesses and services, importing, finding, tagging, exporting |
+| [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | people using it | step by step: merchants and services, importing, finding, tagging, exporting |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | developers | how it is put together, the database, design decisions, tests, connecting to the main system |
 | [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) | developers | limits and quirks worth knowing before changing code |
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | everyone | what changed in each version |
@@ -33,26 +33,53 @@ database on first start. On one computer there is no login; the server setup has
 | [docs/converter/](docs/converter/README.md) | everyone | the file converter's documents (0.21.2): every rule for phone numbers, dates and column matching used by each import |
 
 ```
-Businesses / Services:  set up once: each business with the main system's ID; the list of services
-New import:  business + service → upload → columns matched (template / rules / Claude on request) → review
+Merchants / Services:  merchants and locations loaded from the main app; the list of services set up once
+New import:  merchant + location + service → upload → columns matched (template / rules / Claude on request) → review
              → Start import (background) → one record per file row, all its numbers, every column kept
 Find:        find requests (AND within a request, OR between requests, Omit) → found set → constrain / extend /
              omit → add to a tag, or download as CSV
-Tags:        one business per tag → export: one row per unique phone number, in the converter's import format
+Tags:        one merchant per tag → export: one row per unique phone number, in the converter's import format
 ```
 
 ## Pages
 
 | Page | What it's for |
 |---|---|
-| **Find** | Find records with requests (see [Finding records](#finding-records)); limit to businesses and services; see the found set, one record's details (every field, its numbers, the row as in the file, its tags); omit records; add the found set to a tag or make a new tag from it; download the found set as CSV. |
-| **Tags** | Every tag with its business, records and unique numbers. One tag: export (download and preview), its records (remove some), rename, notes, delete, and its history (who added or removed how many records, exports). |
-| **New import** | Choose the business and service, upload a file, check how it was read, review the column mapping (the converter's page), start the import. Warns when the same file was already imported for that business. |
-| **Imports** | Every import with its business, service, status, progress and records. One import: records stored, numbers, rows without a usable number, side by side (original vs cleaned), what changed, the mapping used, the mistake check, *Show this import's records in Find*, *Delete this import's records*. |
-| **Businesses** | Add a business (ID as in the main system, name, notes), correct one (a corrected ID follows into its imports, records and tags), delete one that has no imports or tags. |
+| **Find** | Find records with requests (see [Finding records](#finding-records)); limit to merchants, locations and services; see the found set, one record's details (every field, its numbers, the row as in the file, its tags); omit records; add the found set to a tag or make a new tag from it; download the found set as CSV. |
+| **Tags** | Every tag with its merchant, records and unique numbers. One tag: export (download and preview), its records (remove some), rename, notes, delete, and its history (who added or removed how many records, exports). |
+| **New import** | Choose the merchant, its location (filled in when it has one) and the service, upload a file, check how it was read, review the column mapping (the converter's page), start the import. Warns when the same file was already imported for that merchant. |
+| **Imports** | Every import with its merchant, location, service, status, progress and records. One import: records stored, numbers, rows without a usable number, side by side (original vs cleaned), what changed, the mapping used, the mistake check, *Show this import's records in Find*, *Delete this import's records*. |
+| **Merchants** | The main app's merchants and their locations, with their IDs, imports, records and tags; loaded from the main app (automatically from its ClickHouse, or from a CSV exported there and uploaded here), never typed in. See [Merchants and locations](#merchants-and-locations). |
 | **Services** | The list every import picks from: add, rename, deactivate (no longer offered; its records keep it), delete one no import uses. |
-| **Templates** | Saved column mappings per file layout (as in the converter). The business and service are chosen for each import, not saved. |
+| **Templates** | Saved column mappings per file layout (as in the converter). The merchant, location and service are chosen for each import, not saved. |
 | **Fields** | The record fields and the export format, read-only. |
+
+## Merchants and locations
+
+Customer Records doesn't have businesses of its own: every import is for a **location** of a **merchant** of the
+main app, with the main app's IDs, so records and tags line up with it. A merchant is either one business with one
+location, or a **corporate account** with several locations (Flakowitz Corporate, Denny's CORPORATE…); a chain can
+also be several one-location merchants (the KPOTs). Merchant IDs are the main app's numbers (`63`); location IDs are
+long codes nobody types, so pages show names and addresses.
+
+They are read from the main app's ClickHouse (`pg.merchants`, `pg.locations`), one of two ways:
+
+- **Automatically**, when `.env` has `CLICKHOUSE_URL`, `CLICKHOUSE_USER` and `CLICKHOUSE_PASSWORD` (an app user
+  that may read those two tables): at start, then every hour (`MERCHANTS_REFRESH_MINUTES`), and with *Load from the
+  main app now* on the Merchants page.
+- **From a file**, until then: on the Merchants page, copy the query under *Load from a file*, run it in the
+  ClickHouse console, export the result as CSV and upload it.
+
+A merchant or location that leaves the main app's list is kept (its imports, records and tags refer to it) but no
+longer offered; it comes back if it reappears. Only active merchants are offered (not archived ones). A merchant without any
+location can't be imported for until the main app has one for it (the page says so).
+
+**Coming from 1.5 or earlier**, a business typed in by hand whose ID is a main app merchant ID becomes that
+merchant (with the main app's name); the others are marked *no longer in the main app* by the first load. Either
+way they keep their imports and records, without a location. To start clean instead, stop the app and run
+`.venv/bin/python scripts/reset_records.py --yes` (Docker: `docker compose exec app python scripts/reset_records.py
+--yes`): it deletes every merchant, location, import, record and tag, and the import jobs with their files; services,
+users and templates stay. Without `--yes` it only says what it would delete.
 
 ## Importing
 
@@ -72,7 +99,9 @@ The column matching, the review page and every conversion rule are the converter
 - **Repaired numbers** (the converter's approved repairs) are stored marked *repaired*, with the number as written.
 - **No duplicate removal** at import: the same customer in two files is two records. Duplicates are merged when a
   tag is exported.
-- **The same file twice** for the same business: the page warns before importing it again.
+- **The same file twice** for the same merchant: the page warns before importing it again.
+- **One location per import.** A file that mixes several locations (a corporate export with a *Store* column) has to
+  be split before importing, for now.
 - **Re-running** a completed import (after fixing the mapping): delete its records first (*Delete this import's
   records* on its page), which also takes them out of their tags; then *Re-run this import*.
 
@@ -102,8 +131,9 @@ To add a field, add it to the YAML file and restart the app: its database column
 ## Finding records
 
 A find is one or more **requests**. **Nothing is required**: fill in only what you're looking for, and a Find with
-everything blank shows every record. Each request shows what is searched most: **Business** and **Services**
-pickers (one or more of each; empty = any) and **Date**, then **Phone**, **First name** and **Last name**. Every
+everything blank shows every record. Each request shows what is searched most: **Merchants**, **Locations** and
+**Services** pickers (one or more of each; empty = any; Locations lists the locations of corporate accounts, the
+merchants with several) and **Date**, then **Phone**, **First name** and **Last name**. Every
 other field is one click away under **＋ Add a field** (and taken off again with its ✕): Full name, Gender, Email, address,
 City, State, ZIP, Total visits, Total spent, Record created (the import date), Birthday, Anniversary, the other
 dates (first visit, last text, redemption, spin, contacted), Any field, Consent, Phone problem, Tag, Import #, File
@@ -182,31 +212,33 @@ year are stored with year 1600: month/day criteria (`9/12`, `10/*`) and the year
 `9/12/1600`) find them; another year, a range or before/after with a year never does (`<1/1/1950` isn't "year
 unknown").
 
-Typical finds: **a business** — pick it under Business, Find. **A business and one or more of its services** — pick
-the business and the services in one request. **A business without one service** — pick the business, click
+Typical finds: **a merchant** — pick it under Merchants, Find (a corporate account: all its locations). **One
+location of a corporate account** — pick it under Locations. **A merchant and one or more of its services** — pick
+the merchant and the services in one request. **A merchant without one service** — pick the merchant, click
 *+ Omit request* and pick the service there. **Visited in a date range** — Date `1/1/2026...1/20/2026`. **Friday
 guests** — Date `fri` (in October 2026: `fri 10/2026`). **A phone number anywhere** — Phone `516-555-0100` alone.
-**Lapsed guests of a business** — the business and Date `...6/30/2026`. **Imported this month** — Add a field → Record created,
+**Lapsed guests of a merchant** — the merchant and Date `...6/30/2026`. **Imported this month** — Add a field → Record created,
 `10/2026`. **Everyone in Bayside or Flushing** — two requests, City `bayside` and City `flushing` (Add a field →
 City). **October birthdays** — Add a field → Birthday, `10/*`.
 
 ## Tags and exports
 
-- A tag belongs to **one business** (the main system imports per business). Adding a found set adds only that
-  business's records and says how many of other businesses were left out.
+- A tag belongs to **one merchant** (the main app imports per merchant), and can hold records of any of its
+  locations. Adding a found set adds only that merchant's records and says how many of other merchants were left
+  out.
 - A tag holds records, not a search: records added later to the database don't join it by themselves. Add or remove
   found sets at any time; the tag's history lists every change.
 - **Export**: one row per **unique phone number** of the tag's records, in the converter's import format
   (`schemas/target_schema.yaml`: same headers, order, formats, CSV settings), written by the converter's writer.
   Dates are written as that format says (`10/09/2026 12:00 AM`), never as the screen shows them (`Fri, 10/9/2026`).
-  Records without a usable number are left out and counted. The file is named `<business ID>_<tag>_<date-time>.csv`.
+  Records without a usable number are left out and counted. The file is named `<merchant ID>_<tag>_<date-time>.csv`.
 
 When one number is in several records:
 
 | Export column | Value |
 |---|---|
 | phone_number | the number (10 digits) |
-| consent | **always blank for now** — blank changes nobody's consent; the main system handles opt-outs per business (decided 2026-10-14). Records keep the file's consent and can be searched by it. |
+| consent | **always blank for now** — blank changes nobody's consent; the main system handles opt-outs per merchant (decided 2026-10-14). Records keep the file's consent and can be searched by it. |
 | calls_last, transactions_last, in_sms_last, redemptions_last, spin_last, last_contacted | the latest of the records' values |
 | birthday, anniversary | the date with a real year most of the records give (the latest record's on a tie); else the month/day most give, with 1600 |
 
@@ -261,9 +293,11 @@ imports converting at the same time (`IMPORT_WORKERS`, each in its own worker pr
    [docs/converter/OPERATIONS.md](docs/converter/OPERATIONS.md), written for the file converter: where it differs
    from this README (port 8501, server size, logins off), this README is right.
 5. Sign in as `admin`, delete `ADMIN_PASSWORD` from `.env`, and add an account for each person on **Setup → Users**.
+6. Load the merchants (**Setup → Merchants**; see [Merchants and locations](#merchants-and-locations)) and add the
+   services.
 
 Logins are always on in the Docker setup (`docker-compose.yml` sets `AUTH_MODE=password`, whatever `.env` says):
-each person signs in with their own account, and imports, tags, businesses and services show who made them. A
+each person signs in with their own account, and imports, tags and services show who made them. A
 deleted account is signed out at its next click. Stopping or updating the server stops the imports running or
 waiting at that moment: they show *Interrupted*, with nothing stored, and are started again with *Re-run*.
 
@@ -281,7 +315,7 @@ records); each import's files are kept 30 days (`FILE_RETENTION_DAYS`). With les
 
 ### Backups
 
-- **The records** (businesses, services, imports, records, tags): `pg_dump customer_records > backup.sql`
+- **The records** (merchants, locations, services, imports, records, tags): `pg_dump customer_records > backup.sql`
   (Docker: `docker compose exec db pg_dump -U records customer_records > backup.sql`). Restore into an empty
   database with `psql customer_records < backup.sql`.
 - **The app's own data** (`data/`: import jobs, templates, each import's files for 30 days): copy the folder.
@@ -290,7 +324,7 @@ records); each import's files are kept 30 days (`FILE_RETENTION_DAYS`). With les
 
 | Where | What |
 |---|---|
-| PostgreSQL | businesses, services, imports (business, service, file, who, when, counts), records (every field, the row as in the file, why there's no usable number), their phone numbers, tags, tag records and tag history. Kept until deleted (an import's records can be deleted on its page). |
+| PostgreSQL | merchants and locations (copies of the main app's), services, imports (merchant, location, service, file, who, when, counts), records (every field, the row as in the file, why there's no usable number), their phone numbers, tags, tag records and tag history. Kept until deleted (an import's records can be deleted on its page). |
 | `data/converter.db` (SQLite) | the app's own state, as in the converter: import jobs and progress, templates, drafts, users, display preferences |
 | `data/imports/<id>/` | each import's original file and side-by-side data; **deleted after `FILE_RETENTION_DAYS` (30)** — the records stay |
 
@@ -310,6 +344,9 @@ Customer Records' own:
 | `IMPORT_WORKERS` | 5 | imports that run at the same time, each in its own worker process; more wait as *queued* (the converter alone defaults to 2) |
 | `DATABASE_POOL_SIZE` | 16 | the most PostgreSQL connections the app opens for the pages; each running import uses up to 2 more |
 | `AUTH_MODE` | `none` | `password`: everyone signs in (accounts on the Users page). Docker always uses `password` |
+| `CLICKHOUSE_URL` | — | the main app's ClickHouse (`https://<host>:8443`, or just the host), where merchants and locations are read |
+| `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD` | — | its app user (may read `pg.merchants` and `pg.locations`); without these, merchants are loaded from a file on the Merchants page |
+| `MERCHANTS_REFRESH_MINUTES` | 60 | minutes between automatic loads of the merchants (0 = only with the Merchants page's button) |
 | `DEFAULT_PAGE` | `new` | first page: `new`, `imports` or `find` |
 | `APP_TITLE` | Customer Records | browser tab title |
 | `PORT` | 8502 | `run_local.sh` only: the port (the file converter keeps 8501); not read from `.env` |
