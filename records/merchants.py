@@ -16,7 +16,8 @@ Two ways in, both ending in :meth:`records.store.RecordStore.load_merchants`:
   and upload it on the Merchants page. That works with read access only, until the app has its own user.
 
 Merchant IDs are whole numbers in the main app and are kept as their digits (``"63"``); location IDs are UUIDs,
-kept lower-case. A merchant without a location is kept (it shows on the Merchants page) but can't be imported for.
+kept lower-case; addresses (JSON in the main app) as one line (:func:`address_text`). A merchant without a location
+is kept (it shows on the Merchants page) but can't be imported for.
 """
 
 from __future__ import annotations
@@ -61,13 +62,60 @@ def _text(value) -> str:
     return "" if t in NULLS else t
 
 
+# The parts of the main app's address (JSON), in the order they're written on one line.
+ADDRESS_PARTS = ["street", "city", "state", "zip"]
+# Other parts written too (after the street): a second line or a suite; coordinates, a country and flags are not.
+ADDRESS_EXTRA = re.compile(r"street|line|address|suite|unit|apt|apartment|floor|building")
+
+
+def _address_part(value) -> str:
+    """One part of a JSON address as text: whole numbers without '.0'; true/false, NaN and non-text values left out."""
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return ""
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")) or not value.is_integer():
+            return ""
+        value = int(value)
+    return " ".join(re.sub(r"[\x00-\x1f\x7f]", " ", _text(value)).split())  # one line, no control characters
+
+
+def address_text(value) -> str:
+    """A location's address as one line, as pickers show it (1.6.1).
+
+    The main app keeps an address as JSON, ``{"zip": "11801", "city": "Hicksville", "state": "NY", "street": "25 North
+    Newbridge Road"}``, which becomes "25 North Newbridge Road, Hicksville, NY 11801": empty parts (a city of null) are
+    left out, a second line or suite follows the street, a ZIP given as a number keeps its 5 digits. Anything that
+    isn't a JSON object is kept as written.
+    """
+    parts = value if isinstance(value, dict) else None
+    text = "" if parts is not None else _text(value)
+    if parts is None:
+        if not text.startswith("{"):
+            return text
+        try:
+            parts = json.loads(text)
+        except (ValueError, RecursionError):  # not JSON, or nested beyond reason
+            return text
+        if not isinstance(parts, dict):
+            return text
+    parts = {str(k).strip().lower(): v for k, v in parts.items()}
+    zip_code = parts.get("zip")
+    if isinstance(zip_code, int) and not isinstance(zip_code, bool) and 0 <= zip_code < 100000:
+        parts["zip"] = f"{zip_code:05d}"
+    words = {k: _address_part(v) for k, v in parts.items()}
+    state_zip = " ".join(p for p in (words.get("state", ""), words.get("zip", "")) if p)
+    extra = [v for k, v in words.items() if k not in ADDRESS_PARTS and ADDRESS_EXTRA.search(k)]
+    line = ", ".join(p for p in [words.get("street", ""), *extra, words.get("city", ""), state_zip] if p)
+    return line.encode("utf-8", "replace").decode("utf-8")  # a lone surrogate escape (\ud800) becomes "?"
+
+
 def parse_rows(rows: Iterable[dict], start: int = 1) -> tuple[list[dict], list[dict]]:
     """(merchants, locations) from rows of :data:`COLUMNS` (from ClickHouse or a file). Raises MerchantListError.
 
-    Merchants: {"id", "name", "status"}; locations: {"id" (a UUID, lower-case), "merchant_id", "name", "address",
-    "kind"}. ``start``: the number of the first row in messages (2 for a file: its row 1 is the header). Rows with
-    nothing in them (a spreadsheet's trailing ",,,,") are skipped; a merchant or location listed twice must say the
-    same both times.
+    Merchants: {"id", "name", "status"}; locations: {"id" (a UUID, lower-case), "merchant_id", "name", "address" (one
+    line, :func:`address_text`), "kind"}. ``start``: the number of the first row in messages (2 for a file: its row 1
+    is the header). Rows with nothing in them (a spreadsheet's trailing ",,,,") are skipped; a merchant or location
+    listed twice must say the same both times.
     """
     merchants: dict[str, dict] = {}
     locations: dict[str, dict] = {}
@@ -96,7 +144,7 @@ def parse_rows(rows: Iterable[dict], start: int = 1) -> tuple[list[dict], list[d
                 raise MerchantListError(f"Row {n}: the location ID {lid!r} isn't a location ID of the main app "
                                         "(a UUID).") from None
             location = {"id": lid, "merchant_id": mid, "name": _text(row.get("location_name")),
-                        "address": _text(row.get("location_address")),
+                        "address": address_text(row.get("location_address")),
                         "kind": _text(row.get("location_kind")).lower()}
             if locations.setdefault(lid, location) != location:
                 raise MerchantListError(f"Row {n}: location {lid} is listed twice with different details.")
@@ -124,14 +172,19 @@ def rows_from_file(data: bytes) -> list[dict]:
     text = "".join(lines)
     first = lines[0] if lines else ""
     delimiter = max([",", "\t", ";"], key=first.count) if first else ","
-    reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
-    header = [(h or "").strip().lower() for h in reader.fieldnames or []]
-    missing = [c for c in REQUIRED if c not in header]
-    if missing:
-        raise MerchantListError(
-            f"The file has no {', '.join(missing)} column. Export the result of the query shown on this page, with "
-            "its column names (CSV).")
-    return list(reader)
+    # newline="": rows may end in \r\n, \n or a lone \r (Excel's "CSV (Macintosh)"), as the csv module expects.
+    reader = csv.DictReader(io.StringIO(text, newline=""), delimiter=delimiter)
+    try:
+        header = [(h or "").strip().lower() for h in reader.fieldnames or []]
+        missing = [c for c in REQUIRED if c not in header]
+        if missing:
+            raise MerchantListError(
+                f"The file has no {', '.join(missing)} column. Export the result of the query shown on this page, "
+                "with its column names (CSV).")
+        return list(reader)
+    except csv.Error as exc:
+        raise MerchantListError(f"The file couldn't be read as CSV ({exc}). Export the result of the query shown "
+                                "on this page again, as CSV.") from None
 
 
 def clickhouse_url(url: str) -> str:
