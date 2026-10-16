@@ -4,6 +4,15 @@ What changed in each version of Customer Records. The running version is shown i
 is tagged in git (`vX.Y.Z`). The history of the file converter this project is based on is in
 [converter/CHANGELOG.md](converter/CHANGELOG.md).
 
+## 1.6.1 — locations' addresses on one line
+
+- **A location's address shows as one line**, "25 North Newbridge Road, Hicksville, NY 11801", in the Location
+  pickers and on the Merchants page. The main app keeps addresses as JSON (street, city, state, ZIP; a city may be
+  empty), which 1.6.0 showed as it was. Loading the merchants again (by hand or the hourly load) rewrites the
+  addresses already loaded.
+- **Merchant files with Mac line endings** (Excel's *CSV (Macintosh)*) load, and a file that can't be read as CSV
+  is explained on the page instead of showing an error trace.
+
 ## 1.6.0 — merchants and locations from the main app
 
 - **Businesses are now the main app's merchants and locations**, with the main app's IDs, instead of being typed
