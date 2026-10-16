@@ -15,9 +15,10 @@ from records.store import RecordStore, StoreError
 
 
 def ensure_business(rs: RecordStore, business: str, name: str | None = None) -> None:
-    """Add the business unless it exists."""
+    """Add the merchant, with one location ("<id>-main"), unless it exists."""
     if rs.business(business) is None:
         rs.add_business(business, name or f"Business {business}")
+        rs.add_location(f"{business}-main", business, "Main store", "1 Main St")
 
 
 def ensure_service(rs: RecordStore, name: str) -> int:
@@ -30,11 +31,11 @@ def ensure_service(rs: RecordStore, name: str) -> int:
 
 def import_file(rs: RecordStore, jobs: Store, schema, name: str, data: bytes | str, business: str = "1001",
                 service: str = "Toast export", mapping: Mapping | None = None, edit=None,
-                timezone: str = "America/New_York"):
-    """Import one file for a business and service; returns (job record, Customer Records import id).
+                timezone: str = "America/New_York", location: str | None = None):
+    """Import one file for a merchant (its one location) and service; returns (job record, Customer Records import id).
 
     ``mapping``: use this mapping instead of the automatic one; ``edit(mapping) -> mapping``: change the automatic
-    one (e.g. map consent by hand, as a person would).
+    one (e.g. map consent by hand, as a person would). ``location``: the location's ID, for a merchant with several.
     """
     if isinstance(data, str):
         data = data.encode()
@@ -44,7 +45,8 @@ def import_file(rs: RecordStore, jobs: Store, schema, name: str, data: bytes | s
     m = mapping or initial_mapping(schema, rr.df, profile_columns(rr.df), None, None, use_ai=False).mapping
     if edit:
         m = edit(m)
-    imp = rs.create_import(business, sid, name, hashlib.sha1(data).hexdigest(), rr.sheet, "tester")
+    imp = rs.create_import(business, sid, name, hashlib.sha1(data).hexdigest(), rr.sheet, "tester",
+                           location_id=location)
     job = jobs.create_import(username="tester", filename=name, data=data, schema_label=schema.label,
                              schema_json=schema.model_dump_json(), mapping=m,
                              read_options={"sheet": rr.sheet, "header_row": rr.header_row, "timezone": timezone,
