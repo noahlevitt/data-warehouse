@@ -10,22 +10,29 @@ adds its column (and index) on the next start; nothing is ever dropped or retype
 Tables
 ------
 ==================  ===============================================================================================
-``businesses``      id (the same ID as in the main system, typed in by hand), name, notes
+``businesses``      the main app's **merchants** (1.6.0): id (the merchant ID), name, ``status`` (active /
+                    archived), ``removed_at`` (set when the merchant is no longer in the main app's list),
+                    ``synced_at``. Loaded from the main app (records.merchants), not typed in; the table keeps its
+                    1.0 name, and "business" in the code means a merchant
+``locations``       the main app's locations (1.6.0): id (the location ID, a UUID), ``business_id`` (its merchant),
+                    name, address, ``kind`` (store / office), ``removed_at``, ``synced_at``
 ``services``        the list chosen from on every import; deactivated ones stay on their records
-``imports``         one per file imported: business, service, file name and SHA-1, who, when, status, counts, the
-                    file's column names, and ``first_visit_as`` (see records.importer); ``job_id`` is the import's
-                    number in the app (data/converter.db), whose page shows the side-by-side view
-``records``         one per file row: business, service, import, file row, a column per record field (phone
-                    numbers apart), ``phone_issue`` (why there is no usable number), ``issues`` (values that couldn't
-                    be read), ``source`` (the row exactly as in the file, every column) and ``search_text``
+``imports``         one per file imported: merchant, location, service, file name and SHA-1, who, when, status,
+                    counts, the file's column names, and ``first_visit_as`` (see records.importer); ``job_id`` is
+                    the import's number in the app (data/converter.db), whose page shows the side-by-side view
+``records``         one per file row: merchant, location, service, import, file row, a column per record field
+                    (phone numbers apart), ``phone_issue`` (why there is no usable number), ``issues`` (values
+                    that couldn't be read), ``source`` (the row exactly as in the file, every column) and
+                    ``search_text``
 ``record_phones``   every usable number of a record (10 digits, phone columns' order), ``repaired``, ``original``
-``tags``            a named list for one business; ``tag_records`` its records; ``tag_events`` what was done to it
+``tags``            a named list for one merchant; ``tag_records`` its records; ``tag_events`` what was done to it
 ``app_meta``        small key/value facts (e.g. whether pg_trgm is available, which name table is loaded)
 ``first_names``     US first names with how many girls and boys got them, for gender guesses (records.gender)
 ==================  ===============================================================================================
 
 Deleting an import deletes its records, which removes them from tags (``ON DELETE CASCADE``); the store logs that
-on the tags concerned. A business ID corrected later follows into every table (``ON UPDATE CASCADE``).
+on the tags concerned. Imports and records from before 1.6.0 have no location (``location_id`` is NULL); their
+hand-typed businesses are marked removed by the first load of the main app's merchants.
 
 Column types per record field type: date → date, datetime → timestamp (as written in the client's time zone, no
 zone), integer → bigint, decimal → numeric, boolean → boolean, everything else → text. Phone fields have no column:
@@ -58,8 +65,8 @@ log = logging.getLogger(__name__)
 COLUMN_TYPES = {"date": "date", "datetime": "timestamp", "integer": "bigint", "decimal": "numeric",
                 "boolean": "boolean"}
 # Columns of `records` that aren't record fields; a field may not use these names.
-RESERVED = {"id", "import_id", "business_id", "service_id", "file_row", "phone_issue", "issues", "source",
-            "search_text", "created_at"}
+RESERVED = {"id", "import_id", "business_id", "location_id", "service_id", "file_row", "phone_issue", "issues",
+            "source", "search_text", "created_at"}
 # Field names become column names: lowercase letters, digits and underscores, starting with a letter.
 FIELD_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,50}$")
 # Text types that get a trigram index (word and "contains" searches); others are matched on exact values.
@@ -155,6 +162,22 @@ CREATE TABLE IF NOT EXISTS tag_events (
     detail text NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS tag_events_tag ON tag_events (tag_id, at);
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active';
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS removed_at timestamptz;
+ALTER TABLE businesses ADD COLUMN IF NOT EXISTS synced_at timestamptz;
+CREATE TABLE IF NOT EXISTS locations (
+    id text PRIMARY KEY CHECK (btrim(id) <> ''),
+    business_id text NOT NULL REFERENCES businesses (id) ON UPDATE CASCADE,
+    name text NOT NULL DEFAULT '',
+    address text NOT NULL DEFAULT '',
+    kind text NOT NULL DEFAULT '',
+    removed_at timestamptz,
+    synced_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS locations_business ON locations (business_id);
+ALTER TABLE imports ADD COLUMN IF NOT EXISTS location_id text REFERENCES locations (id) ON UPDATE CASCADE;
+ALTER TABLE records ADD COLUMN IF NOT EXISTS location_id text REFERENCES locations (id) ON UPDATE CASCADE;
+CREATE INDEX IF NOT EXISTS records_location ON records (location_id);
 """
 
 
