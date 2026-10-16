@@ -148,8 +148,8 @@ def test_the_found_set_shows_sorts_and_writes_the_date(data):
         "Birthday": ("date", "M/D/YYYY")}                              # no day of the week for birthdays
     csv = F.found_set_csv(rs.db, schema, cond, params).decode("utf-8-sig").splitlines()
     head = csv[0].split(",")
-    assert head[9:11] == ["Date", "Day"]
-    assert csv[1].split(",")[9:11] == ["10/05/2026", "Mon"]
+    assert head[11:13] == ["Date", "Day"]
+    assert csv[1].split(",")[11:13] == ["10/05/2026", "Mon"]
     assert F.record_date(schema, rs.record(rows[0]["id"])) == date(2026, 10, 5)
 
 
