@@ -5,6 +5,7 @@ ClickHouse is stood in for by a small local HTTP server that answers like ClickH
 
 from __future__ import annotations
 
+import csv
 import json
 import threading
 import time
@@ -14,10 +15,11 @@ import pytest
 
 from records import merchants as M
 
-ROWS = [  # as ClickHouse returns QUERY (JSONEachRow): numbers as numbers, NULL as null
+ROWS = [  # as ClickHouse returns QUERY (JSONEachRow): numbers as numbers, NULL as null, the address as JSON text
     {"merchant_id": 63, "merchant_name": "Flakowitz Corporate", "merchant_status": "active",
      "location_id": "0B1E5C3A-0000-4000-8000-000000000001", "location_name": "Boca Raton",
-     "location_address": "1 A St", "location_kind": "store"},
+     "location_address": '{"zip": "33431", "city": "Boca Raton", "state": "FL", "street": "1 A St"}',
+     "location_kind": "store"},
     {"merchant_id": 63, "merchant_name": "Flakowitz Corporate", "merchant_status": "active",
      "location_id": "0b1e5c3a-0000-4000-8000-000000000002", "location_name": "Delray", "location_address": None,
      "location_kind": "store"},
@@ -29,15 +31,15 @@ ROWS = [  # as ClickHouse returns QUERY (JSONEachRow): numbers as numbers, NULL 
 
 
 def test_rows_become_merchants_and_locations():
-    """One merchant per ID (also when it has several locations), IDs as digits, location IDs lower-case, a merchant
-    without a location kept, empty values as ''."""
+    """One merchant per ID (also when it has several locations), IDs as digits, location IDs lower-case, the address
+    as one line, a merchant without a location kept, empty values as ''."""
     merchants, locations = M.parse_rows(ROWS)
     assert merchants == [{"id": "63", "name": "Flakowitz Corporate", "status": "active"},
                          {"id": "203", "name": "La Familia Deli & Grill CORPORATE", "status": "active"},
                          {"id": "281", "name": "delete", "status": "archived"}]
     assert locations == [
-        {"id": "0b1e5c3a-0000-4000-8000-000000000001", "merchant_id": "63", "name": "Boca Raton", "address": "1 A St",
-         "kind": "store"},
+        {"id": "0b1e5c3a-0000-4000-8000-000000000001", "merchant_id": "63", "name": "Boca Raton",
+         "address": "1 A St, Boca Raton, FL 33431", "kind": "store"},
         {"id": "0b1e5c3a-0000-4000-8000-000000000002", "merchant_id": "63", "name": "Delray", "address": "",
          "kind": "store"}]
 
@@ -63,10 +65,48 @@ def test_a_file_exported_from_the_console():
     assert M.parse_rows(M.rows_from_file(tsv), start=2)[1][0]["id"] == UUID1
 
 
+def test_the_main_apps_address_becomes_one_line():
+    """The main app's address is JSON (a city may be null); in the console's CSV export its quotes are doubled.
+    Text that isn't a JSON object stays as it is."""
+    main_app = '{"zip": "11801", "city": "Hicksville", "state": "NY", "street": "25 North Newbridge Road"}'
+    assert M.address_text(main_app) == "25 North Newbridge Road, Hicksville, NY 11801"
+    assert M.address_text('{"zip": "11787", "city": null, "state": "NY", "street": "59 New York 111"}') \
+        == "59 New York 111, NY 11787"
+    assert M.address_text('{"street": "1 A St", "unit": "Suite 4", "city": "", "state": null, "zip": "33431"}') \
+        == "1 A St, Suite 4, 33431"
+    assert M.address_text('{"zip": null, "city": null, "state": null, "street": null}') == ""
+    for kept in ["1 A St, Boca Raton", "{not json", '["1 A St"]', "", None, "\\N"]:
+        assert M.address_text(kept) == ("" if kept in ("", None, "\\N") else kept)
+    exported = HEAD + (f'63,Flakowitz Corporate,active,{UUID1},Hicksville,'
+                       '"{""zip"": ""11801"", ""city"": ""Hicksville"", ""state"": ""NY"", '
+                       '""street"": ""25 North Newbridge Road""}",store\n')
+    assert M.parse_rows(M.rows_from_file(exported.encode()), start=2)[1][0]["address"] \
+        == "25 North Newbridge Road, Hicksville, NY 11801"
+
+
+def test_unusual_json_addresses():
+    """Numbers, flags, coordinates, line breaks and escapes the database can't store; an address already parsed."""
+    assert M.address_text('{"zip": 7410, "city": "Fair Lawn", "state": "NJ", "street": "1 Main St"}') \
+        == "1 Main St, Fair Lawn, NJ 07410"
+    assert M.address_text('{"zip": 11801.0, "state": "NY", "street": "1 Main", "verified": true, "lat": 40.7, '
+                          '"lng": -73.5, "country": "US", "Address_Line2": "Apt 2", "x": NaN}') \
+        == "1 Main, Apt 2, NY 11801"
+    assert M.address_text('{"street": "1 Main\\nApt 2", "city": "Hicksville\\u0000", "zip": "11801"}') \
+        == "1 Main Apt 2, Hicksville, 11801"
+    assert M.address_text('{"street": "1 Main \\ud800St"}') == "1 Main ?St"
+    assert M.address_text({"zip": "11801", "street": "1 Main"}) == "1 Main, 11801"
+    deep = '{"a":' + "[" * 30000 + "]" * 30000 + "}"
+    assert M.address_text(deep) == deep
+    for kept in ["{Apt 4} 1 Main St", '{"zip": 01901}', '{"street": "1 A"}{"street": "2 B"}']:
+        assert M.address_text(kept) == kept
+
+
 def test_a_file_as_a_spreadsheet_saves_it():
-    """UTF-16 ("Unicode text"), Excel's sep= line, blank lines before the header, semicolons in Windows encoding."""
+    """UTF-16 ("Unicode text"), Excel's sep= line, blank lines before the header, Mac (\\r) and Windows line endings,
+    semicolons in Windows encoding."""
     text = HEAD + f"63,Flakowitz Corporate,active,{UUID1},Boca Raton,,store\n"
     for data in [text.encode("utf-16"), ("sep=,\n" + text).encode(), ("\n\n" + text).encode(),
+                 text.replace("\n", "\r").encode(), text.replace("\n", "\r\n").encode(),
                  text.replace(",", ";").replace("Boca Raton", "Bocà").encode("cp1252")]:
         merchants, locations = M.parse_rows(M.rows_from_file(data), start=2)
         assert merchants[0]["id"] == "63" and locations[0]["id"] == UUID1
@@ -90,6 +130,12 @@ def test_a_wrong_file_says_what_to_do():
     with pytest.raises(M.MerchantListError, match="Row 2: location .* is listed twice"):
         M.parse_rows([{"merchant_id": 63, "merchant_name": "A", "location_id": UUID1},
                       {"merchant_id": 64, "merchant_name": "B", "location_id": UUID1}])
+    limit = csv.field_size_limit(1000)  # Python's own limit; the converter raises it when loaded
+    try:
+        with pytest.raises(M.MerchantListError, match="couldn't be read as CSV .field larger than field limit"):
+            M.rows_from_file((HEAD + "63,A,active,," + "x" * 2000 + ",,\n").encode())
+    finally:
+        csv.field_size_limit(limit)
     with pytest.raises(M.MerchantListError, match="Row 1 isn't a row of merchants and locations"):
         M.parse_rows([[1, 2, 3]])
     with pytest.raises(M.MerchantListError, match="no merchants"):
