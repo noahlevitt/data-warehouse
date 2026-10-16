@@ -15,12 +15,14 @@ import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
+from converter.schema import load_schema
 from converter.storage import Store
 from records import find as F
 from records.db import Database, close_all
 from records.store import RecordStore
 
 from .conftest import ROOT, drop_database, fresh_database
+from .records_util import import_file
 
 CSV = b"First Name,Last Name,Phone,Last Visit\nJohn,Smith,5165550100,10/01/2026\nAnn,Lee,9175551234,10/02/2026\n"
 
@@ -36,6 +38,7 @@ def env(tmp_path_factory, pg_server):
     close_all()
     st.cache_resource.clear()
     db = Database(url, max_size=2)
+    db.setup(load_schema(ROOT / "schemas" / "records_schema.yaml"))
     yield Store(data / "converter.db"), RecordStore(db)
     close_all()
     st.cache_resource.clear()
@@ -93,24 +96,43 @@ def test_database_problems_are_explained(env, monkeypatch):
     st.cache_resource.clear()
 
 
-def test_businesses_and_services_are_added_on_their_pages(env):
+MERCHANTS = [{"id": "1001", "name": "Krave It Bayside", "status": "active"},
+             {"id": "63", "name": "Flakowitz Corporate", "status": "active"},
+             {"id": "203", "name": "La Familia Deli & Grill CORPORATE", "status": "active"}]
+LOCATIONS = [{"id": "kb-1", "merchant_id": "1001", "name": "Bayside", "address": "39-12 Bell Blvd", "kind": "store"},
+             {"id": "fl-1", "merchant_id": "63", "name": "Boca Raton", "address": "1 A St", "kind": "store"},
+             {"id": "fl-2", "merchant_id": "63", "name": "Delray", "address": "2 B St", "kind": "store"},
+             {"id": "fl-hq", "merchant_id": "63", "name": "Head office", "address": "", "kind": "office"}]
+
+
+def test_merchants_come_from_the_main_app_and_services_are_added(env):
+    """The Merchants page lists what was loaded (here straight into the store: AppTest can't upload a file) and
+    shows how to load it; there is nothing to type in. Services are added on their page."""
     _, rs = env
-    at = run_page("Businesses")
-    by_label(at.text_input, "ID (as in the main system)").input("1001")
-    by_label(at.text_input, "Name").input("Krave It Bayside")
-    at.button(key="FormSubmitter:add_business-Add business").click().run()
-    assert rs.business("1001")["name"] == "Krave It Bayside"
+    rs.load_merchants(MERCHANTS, LOCATIONS, "the file merchants.csv", "noah")
+    at = run_page("Merchants")
+    assert not at.exception, [e.value for e in at.exception]
+    assert at.header[0].value == "Merchants" and not at.text_input
+    assert any("from the file merchants.csv by noah" in c.value and "3 merchants and 4 locations" in c.value
+               for c in at.caption)
+    assert any("pg.merchants" in c.value for c in at.code)                # the query to export
+    merchants, locations = [d.value for d in at.dataframe]
+    assert dict(zip(merchants["Merchant"], merchants["Locations"])) == {
+        "Flakowitz Corporate": 3, "Krave It Bayside": 1, "La Familia Deli & Grill CORPORATE": 0}
+    assert len(locations) == 4
+    assert any("203 · La Familia" in c.value and "no location" in c.value for c in at.caption)
     at = run_page("Services")
     by_label(at.text_input, "Name").input("Toast export")
     at.button(key="FormSubmitter:add_service-Add service").click().run()
     assert [s["name"] for s in rs.list_services()] == ["Toast export"]
 
 
-def test_new_import_needs_a_business_and_service_and_stores_records(env):
-    """Start import is blocked until both are chosen; the import then stores one record per row."""
+def test_new_import_needs_a_merchant_location_and_service_and_stores_records(env):
+    """Start import is blocked until all three are chosen (a merchant's only location is filled in); the import
+    then stores one record per row, with its location."""
     jobs, rs = env
     if rs.business("1001") is None:
-        rs.add_business("1001", "Krave It Bayside")
+        rs.load_merchants(MERCHANTS, LOCATIONS, "test")
     sid = next((s["id"] for s in rs.list_services() if s["name"] == "Toast export"), None) or rs.add_service(
         "Toast export")
     did = jobs.create_draft("local", "guests.csv", CSV)
@@ -119,8 +141,16 @@ def test_new_import_needs_a_business_and_service_and_stores_records(env):
     at.run()
     assert not at.exception, [e.value for e in at.exception]
     assert button(at, "Start import").disabled
-    at.selectbox(key="imp_business").select("1001").run()
     at.selectbox(key="imp_service").select(sid).run()
+    at.selectbox(key="imp_business").select("63").run()               # several locations: choose one
+    assert at.selectbox(key="imp_location").value is None and button(at, "Start import").disabled
+    assert at.selectbox(key="imp_location").options == ["Boca Raton — 1 A St", "Delray — 2 B St",
+                                                         "Head office (office)"]
+    at.selectbox(key="imp_business").select("203").run()              # no location: can't be imported for
+    assert at.selectbox(key="imp_location").disabled and button(at, "Start import").disabled
+    assert any("has no location in the main app" in w.value for w in at.warning)
+    at.selectbox(key="imp_business").select("1001").run()             # one location: filled in
+    assert at.selectbox(key="imp_location").value == "kb-1"
     assert not button(at, "Start import").disabled
     button(at, "Start import").click().run()
     job = jobs.list_imports(limit=1)[0]
@@ -130,14 +160,15 @@ def test_new_import_needs_a_business_and_service_and_stores_records(env):
         time.sleep(0.1)
     assert jobs.get_import(job.id).status == "completed", jobs.get_import(job.id).error
     imp = rs.imports_for_jobs([job.id])[job.id]
-    assert (imp["business_id"], imp["service_id"], imp["records"]) == ("1001", sid, 2)
-    # Importing the same file for the same business again is flagged.
+    assert (imp["business_id"], imp["location_id"], imp["service_id"], imp["records"]) == ("1001", "kb-1", sid, 2)
+    assert {r["location_id"] for r in rs.db.fetch("SELECT location_id FROM records")} == {"kb-1"}
+    # Importing the same file for the same merchant again is flagged.
     did = jobs.create_draft("local", "guests.csv", CSV)
     at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60)
     at.query_params["draft"] = did
     at.session_state["imp_business"] = "1001"
     at.run()
-    assert any("already imported for this business" in w.value for w in at.warning)
+    assert any("already imported for this merchant" in w.value for w in at.warning)
 
 
 def test_import_page_shows_the_records_and_opens_them_in_find(env):
@@ -145,7 +176,7 @@ def test_import_page_shows_the_records_and_opens_them_in_find(env):
     job = jobs.list_imports(limit=1, statuses=["completed"])[0]
     at = run_page("Imports", query={"id": str(job.id)})
     assert any("2 records stored" in s.value for s in at.success)
-    assert any("Krave It Bayside" in m.value for m in at.markdown)
+    assert any("Krave It Bayside** · Bayside" in m.value for m in at.markdown)
 
 
 def test_find_with_requests_and_tag_the_found_set(env):
@@ -156,7 +187,7 @@ def test_find_with_requests_and_tag_the_found_set(env):
     button(at, "Find").click().run()
     assert not at.exception, [e.value for e in at.exception]
     assert [m.value for m in at.metric][:2] == ["1", "1"]
-    by_label(at.selectbox, "New tag for business").select("1001")
+    by_label(at.selectbox, "New tag for merchant").select("1001")
     by_label(at.text_input, "Tag name").input("Smiths")
     at.button(key="FormSubmitter:new_tag_from_found-Create tag with found set").click().run()
     [tag] = [t for t in rs.list_tags() if t["name"] == "Smiths"]
@@ -349,13 +380,12 @@ def test_logins_on_the_server(env, monkeypatch):
     assert not at.exception, [e.value for e in at.exception]
     assert any(c.value == "Signed in as **staff1**" for c in at.sidebar.caption)
     staff = {"username": "staff1", "is_admin": False}
-    at = run_page("Businesses", state={"user": staff})
-    by_label(at.text_input, "ID (as in the main system)").input("3003")
-    by_label(at.text_input, "Name").input("Login Test Cafe")
-    at.button(key="FormSubmitter:add_business-Add business").click().run()
-    assert rs.business("3003")["created_by"] == "staff1"
+    at = run_page("Services", state={"user": staff})
+    by_label(at.text_input, "Name").input("Login Test Service")
+    at.button(key="FormSubmitter:add_service-Add service").click().run()
+    assert next(x for x in rs.list_services() if x["name"] == "Login Test Service")["created_by"] == "staff1"
     [table] = [d.value for d in at.dataframe if "Added by" in d.value.columns]
-    assert table.set_index("ID").loc["3003", "Added by"] == "staff1"
+    assert table.set_index("Service").loc["Login Test Service", "Added by"] == "staff1"
     with pytest.raises(AssertionError):  # not in the navigation (run_page finds no such page): staff can't open it
         run_page("Users", state={"user": staff})
     at = run_page("Users", state={"user": {"username": "noah", "is_admin": True}})
@@ -379,3 +409,56 @@ def test_a_deleted_account_is_signed_out_and_admin_rights_apply_at_once(env, mon
     at.session_state["user"] = {"username": "temp1", "is_admin": False}
     at.run()
     assert [t.label for t in at.text_input] == ["Username", "Password"] and not at.sidebar.caption
+
+
+def test_find_by_location_of_a_corporate_account(env):
+    """A merchant with several locations gets a Locations picker in each request; picking one finds its records
+    only, and the found set shows each record's location."""
+    jobs, rs = env
+    schema = load_schema(ROOT / "schemas" / "records_schema.yaml")
+    import_file(rs, jobs, schema, "delray.csv", "First Name,Phone\nDel,5165550111\nRay,5165550112\n",
+                business="63", location="fl-2")
+    import_file(rs, jobs, schema, "boca.csv", "First Name,Phone\nBo,5165550113\n", business="63", location="fl-1")
+    at = run_page("Find")
+    loc = at.multiselect(key="fq_1_1_loc")
+    assert loc.options == ["Flakowitz Corporate · Boca Raton — 1 A St", "Flakowitz Corporate · Delray — 2 B St",
+                           "Flakowitz Corporate · Head office (office)"]   # not Krave It's: it has one location
+    loc.set_value(["fl-2"])
+    button(at, "Find").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert [m.value for m in at.metric][0] == "2"
+    assert any("Flakowitz Corporate · Delray" in c.value for c in at.caption)
+    [found] = [d.value for d in at.dataframe if F.ID_COL in d.value.columns]
+    assert set(found["Location"]) == {"Delray"} and set(found["Merchant"]) == {"63 · Flakowitz Corporate"}
+    at.multiselect(key="fq_1_1_biz").set_value(["63"])
+    at.multiselect(key="fq_1_1_loc").set_value([])
+    button(at, "Find").click().run()
+    assert [m.value for m in at.metric][0] == "3"                       # the merchant: all its locations
+
+
+def test_a_location_that_leaves_the_main_app_is_never_swapped_for_another(env):
+    """Found by the independent test of 1.6.0: Delray chosen, then a load without Delray (and its office) left one
+    location, which was filled in, so the file went to Boca Raton without a word. Now the page says the location is
+    gone and waits for one to be chosen."""
+    jobs, rs = env
+    sid = next(s["id"] for s in rs.list_services() if s["name"] == "Toast export")
+    did = jobs.create_draft("local", "guests.csv", CSV)
+    at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=60)
+    at.query_params["draft"] = did
+    at.run()
+    at.selectbox(key="imp_service").select(sid).run()
+    at.selectbox(key="imp_business").select("63").run()
+    at.selectbox(key="imp_location").select("fl-2").run()
+    assert not button(at, "Start import").disabled
+    try:
+        rs.load_merchants(MERCHANTS, [x for x in LOCATIONS if x["id"] not in ("fl-2", "fl-hq")], "test")
+        at.run()
+        assert at.selectbox(key="imp_location").value is None and button(at, "Start import").disabled
+        assert any("Delray — 2 B St" in w.value and "no longer in the main app" in w.value for w in at.warning)
+        at.run()                                                        # still not filled in on the next click
+        assert at.selectbox(key="imp_location").value is None
+        at.selectbox(key="imp_location").select("fl-1").run()           # chosen again: fine
+        assert not button(at, "Start import").disabled
+        assert not any("no longer in the main app" in w.value for w in at.warning)
+    finally:
+        rs.load_merchants(MERCHANTS, LOCATIONS, "test")
