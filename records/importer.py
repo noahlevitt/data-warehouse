@@ -30,7 +30,8 @@ converter's step 7 (``converter.heuristics``): the column must be 80%+ dates and
 date.
 
 When the import then ends cancelled or failed (a cancel noticed after saving), :meth:`RecordSink.discard` deletes
-what was saved.
+what was saved. A completed import is sent to the main app's bucket only once its run has completed
+(records.bucket), so a discarded one normally never went; if it did, its deletion is queued.
 """
 
 from __future__ import annotations
@@ -52,7 +53,7 @@ from converter.storage import ImportRecord, Store
 
 from . import gender
 from .db import column_type, date_only
-from .store import RecordStore
+from .store import RecordStore, queue_import_deletion
 
 log = logging.getLogger(__name__)
 
@@ -245,6 +246,7 @@ class RecordSink:
             return
         imp_id = int(rec.read_options["records_import_id"])
         with self.records.db.conn() as c:
+            queue_import_deletion(c, imp_id)  # in case its file was already sent to the main app's bucket
             c.execute("DELETE FROM records WHERE import_id = %s", (imp_id,))
             c.execute("UPDATE imports SET status = 'not completed', records = 0, phones = 0, no_phone = 0 "
                       "WHERE id = %s", (imp_id,))
