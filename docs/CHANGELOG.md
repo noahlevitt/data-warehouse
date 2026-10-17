@@ -4,6 +4,29 @@ What changed in each version of Customer Records. The running version is shown i
 is tagged in git (`vX.Y.Z`). The history of the file converter this project is based on is in
 [converter/CHANGELOG.md](converter/CHANGELOG.md).
 
+## 1.7.0 — sending to the main app through its bucket
+
+- **Customer Records sends its data to the main app**, as CSV files in the main app's bucket (Cloudflare R2), for
+  its ClickHouse: every completed import (one row per record, with the merchant, location, service, every field,
+  all its numbers and the row as in the file), the deletion of an import's records once it was sent, and a tag's
+  numbers each time it is exported or sent with the new **Send to the main app** button (a snapshot; a deleted tag
+  sends a last one saying so). Files go in the background, one at a time, and are tried again after a failure (1, 2,
+  4… minutes, at most an hour apart) until they go. Set up with `BUCKET_ENDPOINT`, `BUCKET_NAME`,
+  `BUCKET_ACCESS_KEY_ID` and `BUCKET_SECRET_ACCESS_KEY` in `.env`; without them nothing is sent, and what waits
+  goes once they are set. The file format, for the main app's developers: `docs/BUCKET_FILES.md`.
+- **Where each one stands**: a *Main app* line on each import's and tag's page (sent when and as which file, waiting,
+  or not sent yet with the reason and *Try again now*), a *Main app* column on the Imports list, *Sending to the
+  main app* on the Merchants page (the latest files, what waits), and a warning in the menu while something can't
+  be sent.
+- Found by the independent test and fixed before release: a deletion could go while its import's send was still
+  being tried (it now waits until that send is settled, and still goes when a failed try may have landed); a send
+  cut off by a restart waited 30 minutes (now taken over at once); a deleted tag's last file could carry an earlier
+  name; a merchant ID of non-ASCII digits was accepted for sending; the file description promised every cell of the
+  row in `source` (empty cells aren't kept).
+- `scripts/reset_records.py` also empties the list of what was sent, and says how many files already went (they
+  stay in the bucket).
+- New package: boto3 (installed by `run_local.sh` and the Docker build).
+
 ## 1.6.1 — locations' addresses on one line
 
 - **A location's address shows as one line**, "25 North Newbridge Road, Hicksville, NY 11801", in the Location
