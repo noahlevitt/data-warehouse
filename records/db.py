@@ -26,6 +26,9 @@ Tables
                     ``search_text``
 ``record_phones``   every usable number of a record (10 digits, phone columns' order), ``repaired``, ``original``
 ``tags``            a named list for one merchant; ``tag_records`` its records; ``tag_events`` what was done to it
+``bucket_sends``    the files sent (or waiting to be sent) to the main app's bucket (1.7.0, records.bucket): a
+                    completed import's records, the deletion of an import's records, a tag's numbers. ``imports``
+                    and ``tags`` have a ``uid`` (a UUID) that names them there, unique also across a reset
 ``app_meta``        small key/value facts (e.g. whether pg_trgm is available, which name table is loaded)
 ``first_names``     US first names with how many girls and boys got them, for gender guesses (records.gender)
 ==================  ===============================================================================================
@@ -178,6 +181,37 @@ CREATE INDEX IF NOT EXISTS locations_business ON locations (business_id);
 ALTER TABLE imports ADD COLUMN IF NOT EXISTS location_id text REFERENCES locations (id) ON UPDATE CASCADE;
 ALTER TABLE records ADD COLUMN IF NOT EXISTS location_id text REFERENCES locations (id) ON UPDATE CASCADE;
 CREATE INDEX IF NOT EXISTS records_location ON records (location_id);
+ALTER TABLE imports ADD COLUMN IF NOT EXISTS uid uuid NOT NULL DEFAULT gen_random_uuid();
+CREATE UNIQUE INDEX IF NOT EXISTS imports_uid ON imports (uid);
+ALTER TABLE tags ADD COLUMN IF NOT EXISTS uid uuid NOT NULL DEFAULT gen_random_uuid();
+CREATE UNIQUE INDEX IF NOT EXISTS tags_uid ON tags (uid);
+CREATE TABLE IF NOT EXISTS bucket_sends (
+    id bigserial PRIMARY KEY,
+    kind text NOT NULL CHECK (kind IN ('import', 'delete', 'tag')),
+    import_id bigint REFERENCES imports (id) ON DELETE CASCADE,
+    file_rows int[],
+    tag_id int,
+    tag_uid uuid,
+    tag_name text NOT NULL DEFAULT '',
+    business_id text NOT NULL,
+    status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sending', 'sent', 'cancelled')),
+    attempts int NOT NULL DEFAULT 0,
+    next_try_at timestamptz NOT NULL DEFAULT now(),
+    claimed_at timestamptz,
+    claimed_by text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    created_by text NOT NULL DEFAULT '',
+    sent_at timestamptz,
+    object_key text NOT NULL DEFAULT '',
+    rows int NOT NULL DEFAULT 0,
+    bytes bigint NOT NULL DEFAULT 0,
+    error text NOT NULL DEFAULT ''
+);
+ALTER TABLE bucket_sends ADD COLUMN IF NOT EXISTS claimed_by text NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX IF NOT EXISTS bucket_sends_import ON bucket_sends (import_id) WHERE kind = 'import';
+CREATE UNIQUE INDEX IF NOT EXISTS bucket_sends_delete ON bucket_sends (import_id) WHERE kind = 'delete';
+CREATE INDEX IF NOT EXISTS bucket_sends_due ON bucket_sends (next_try_at) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS bucket_sends_tag ON bucket_sends (tag_id, id) WHERE kind = 'tag';
 """
 
 
