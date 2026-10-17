@@ -64,8 +64,8 @@ change them only when a converter fix is ported in (section 5).
 - Changes go to Noah as a git bundle, `data-warehouse-updateN.bundle`, numbered in order. The repository itself
   came as `data-warehouse-1.0.0.bundle` (complete, no prerequisites); 1.0.1 came as update1, 1.0.2 as update2,
   1.1.0 as update3, 1.2.0 as update4, 1.2.1 as update5, 1.3.0 as update6, 1.3.1 as update7, 1.4.0 as update8,
-  1.5.0 as update9, 1.6.0 as update10 and 1.6.1 as update11 (with 1.6.0, for a copy still on 1.5.0), so the next is
-  `data-warehouse-update12.bundle`. Update this line with each bundle.
+  1.5.0 as update9, 1.6.0 as update10, 1.6.1 as update11 (with 1.6.0, for a copy still on 1.5.0) and 1.7.0 as
+  update12, so the next is `data-warehouse-update13.bundle`. Update this line with each bundle.
 
   ```bash
   git bundle create ../data-warehouse-updateN.bundle main vX.Y.Z ^vPREVIOUS
@@ -101,12 +101,14 @@ Decided by Noah on 2026-10-14 unless marked otherwise. Don't reverse one without
 |---|---|
 | What it is | Keep nearly every field of every import as a record; each file row is its own record. Search every field, alone and combined (AND, OR, Omit, as in FileMaker). Put chosen records into tags; a tag is the list of unique numbers imported into the main system. |
 | Businesses and services | Every import is for one business and one service. Services are a predetermined list. **Businesses (1.6.0) are the main app's merchants and locations**: a merchant is one business with one location, or a corporate account with several locations (one merchant ID, several location IDs); sometimes one business is two merchant IDs. Every import is for one **location**, so a find can look at one location; one import is one location for now (files with a location column later: split by AI or by code, the developer's call; planned: map the column's values to locations). They come from the main app's ClickHouse, where the merchants and locations live (Noah, 2026-10-16). Built in 1.6.0: copies loaded automatically with the app's own ClickHouse user, or from a CSV exported in the console; never typed in. No real data was in Customer Records yet, so starting fresh was fine. |
-| Database | PostgreSQL (the main system uses PostgreSQL and DuckDB, and ClickHouse). **80 million records or more are expected** (Noah, 2026-10-16), so the records move to ClickHouse (option 1 chosen 2026-10-16: records and their numbers in ClickHouse, everything else in PostgreSQL), after a load test of 80M records against PostgreSQL, once write access is granted (2.0). Noah has read access to the main app's ClickHouse (Cloud, 26.6) for now. |
+| Database | PostgreSQL (the main system uses PostgreSQL and DuckDB, and ClickHouse). **80 million records or more are expected** (Noah, 2026-10-16), so the records move to ClickHouse (option 1 chosen 2026-10-16: records and their numbers in ClickHouse, everything else in PostgreSQL), after a load test of 80M records against PostgreSQL (2.0). Since 1.7.0 the records reach the main app's ClickHouse through its bucket (the main app loads them), so no write access is needed; 2.0 is then finds reading them there. Noah has read access to the main app's ClickHouse (Cloud, 26.6). |
 | Rows without a usable number | Stored as records (searchable), with the reason; never exported. |
-| Tags | One merchant per tag (Noah, 2026-10-16; was one business per tag). Deduplicated (one row per number) when exported. **Tags will be the merchant's segments in the main app**, directly if possible, because the main app can no longer make a segment from a single import (Noah, 2026-10-16). Planned (1.7.0): Customer Records writes each tag's numbers to its own ClickHouse table and the main app gets a segment type that reads it (its `audience_members` is re-evaluated, so rows written there directly would be lost). Needs write access and the lead developer's side. |
+| Tags | One merchant per tag (Noah, 2026-10-16; was one business per tag). Deduplicated (one row per number) when exported. **Tags will be the merchant's segments in the main app**, directly if possible, because the main app can no longer make a segment from a single import (Noah, 2026-10-16; the main app dropped its single-import segment source on 2026-10-14). Built in 1.7.0: each export, and *Send to the main app*, sends a snapshot of the tag to the main app's bucket (the newest replaces the earlier ones; a deleted tag sends a last one saying so; agreed by Noah 2026-10-16). The segment source that reads them is the main app's side. |
 | Export format | The file converter's import format, until the systems are connected. |
 | Consent in exports | Not sent (blank): opt-outs are per business and the main system handles them; once connected, it will know who is opted in or out. Records keep the file's consent. |
-| Before tagging (later) | Deduplicate, check that numbers are cell phones, and remove numbers on the Do Not Call list unless within an 18-month established business relationship. Depends on the main system; not built. |
+| Before tagging (later) | Deduplicate, check that numbers are cell phones, and remove numbers on the Do Not Call list unless within an 18-month established business relationship. The counts that matter come after a find, once these are applied (Noah, 2026-10-16). The main app already does them when it evaluates a segment (seen in its code 2026-10-17: mobile only, VoIP excluded; opt-outs; the Do Not Call list with an established-business-relationship window per segment on the last transaction, call and incoming text, 18 months or 3 for calls), so a tag sent there gets them. |
+| Connecting to the main app | **A separate app first, connected through the main app's bucket, then built into the main app** (Noah, 2026-10-17: "get this up and running first and then work on the new features actually within the app"). Built in 1.7.0: completed imports (Customer Records' cleaned records with record, import, merchant and location IDs, not the original files; agreed 2026-10-16), deletions (a file with the same keys marked deleted; agreed 2026-10-16) and tag snapshots go to the bucket as CSV files (docs/BUCKET_FILES.md); the main app loads them. Finds are to read the main app's ClickHouse later (Customer Records' imports there plus its other data, the old FileMaker exports `sodb_export` and `client_users_export` included), not both databases. Later, in the main app (sendsational, a TypeScript monorepo; the lead developer allows work on a branch): its importer rebuilt around **services with saved column mappings** so new file types need no code, one ClickHouse table for all imports, the converter ported to TypeScript with the 406-file check as its test, lists (tags) as a segment source, and Find and Tags pages there; then this app retires. |
+
 | Platform | A web app or something launched on the computer, Mac first, Windows too. Built as the converter: a local web app (`./run_local.sh`), Docker for a server. |
 | Finds | Nothing is ever required; a blank Find shows every record. The common finds are a business, a business and one or more services, and a business without a service (an Omit request), so each request has Business and Services pickers; a business isn't required either (e.g. a phone number alone). Dates by day or range, also open-ended: `...1/1/2026` up to that day, `1/1/2025...` from it. Every record has its own ID and a creation date, both searchable. (Noah, 2026-10-14, after trying 1.0.2.) |
 | What finds look like | Searched most: Business, Last visit and Service; then a phone number; sometimes first name or first and last name; sometimes ZIP, city, state, address, total spent, birthday, visits, the record's creation (import) date; rarely the record ID. So a request shows Business, Services and Last visit, then Phone, First and Last name, and every other field is added with a click (Add a field). (Noah, 2026-10-14, after 1.1.0.) |
@@ -150,27 +152,38 @@ Customer Records (the repository is `data-warehouse`), and version 1.0.0.
 
 ## 4. Open items
 
-- **Waiting on the main app's lead developer** (asked by Noah, 2026-10-16): an app user for Customer Records on
-  the main app's ClickHouse (SELECT on `pg.merchants` / `pg.locations`; later a `customer_records` database it may
-  write); whether `audience_members` is fully rebuilt
-  (a batch of 745 segments on 2026-10-14 21:50) and a segment type reading Customer Records' tags; whether segment
-  evaluation applies consent, Do Not Call and the mobile check; whether Customer Records should also publish every
-  imported row's dates (`generic_csv_import`) or only the tags. Reported to him: 183 segment memberships with
-  numbers that break US numbering rules, and that the console's read-only role may kill queries and write to
-  outside systems. Known since: the service is `sstxt` (AWS us-east-1, ClickHouse 26.6), host
-  `m7qi5e0gq5.us-east-1.aws.clickhouse.cloud` (HTTPS port 8443, so `CLICKHOUSE_URL` is the host name alone), and its
-  IP access list is open to anywhere (`0.0.0.0/0`), so no server IP needs adding; worth narrowing to the servers that
-  use it. Location addresses there are JSON (`{"zip", "city", "state", "street"}`, city sometimes null), shown on one
-  line since 1.6.1.
+- **Waiting on the main app's lead developer**:
+  - For 1.7.0: the bucket settings for Customer Records (`BUCKET_ENDPOINT`: R2's S3 address for the account,
+    `BUCKET_NAME`: `master-bucket`, and a key that may write to it); loading `data/customer-records/` and
+    `data/customer-records-tags/` into ClickHouse (nothing picks files up from the bucket by itself since
+    2026-10-15; BUCKET_FILES.md has tables and queries); a segment source reading each tag's latest snapshot; how
+    deletions reach the audiences fold (it only adds).
+  - An app user for Customer Records on the main app's ClickHouse (SELECT on `pg.merchants` / `pg.locations`), for
+    the automatic merchant loads; with the bucket, no write access to ClickHouse is needed any more.
+  - Found in the main app (2026-10-16/17), to tell him: credentials written in plain text where they can be read: the
+    R2 key and secret in the `audiences.ndnc` dictionary's definition (visible to read-only ClickHouse users), the
+    Kafka password in `workflows/f/sendsational/kafka.resource.yaml` (line 23), the R2 access key ID in
+    `workflows/f/sendsational/master_bucket.resource.yaml` (line 3), and a staging test user's password in
+    `frontend/.claude/skills/verify/SKILL.md` (line 35); the ClickHouse service accepts connections from any address
+    (`0.0.0.0/0`). Reported earlier: 183 segment memberships with numbers that break US numbering rules, and that
+    the console's read-only role may kill queries and write to outside systems.
+  - Known: the service is `sstxt` (AWS us-east-1, ClickHouse 26.6), host `m7qi5e0gq5.us-east-1.aws.clickhouse.cloud`
+    (`CLICKHOUSE_URL` is the host name alone). Location addresses there are JSON (`{"zip", "city", "state",
+    "street"}`, city sometimes null), shown on one line since 1.6.1.
+- **The main app (sendsational), read 2026-10-17** (a copy of its repository, master `c4beb0dd0`): a Next.js 16 /
+  React 19 dashboard (shadcn, Prisma, better-auth) on PostgreSQL, which reaches ClickHouse only through PostgreSQL
+  functions (pg_clickhouse); a Rust API (actix); Windmill jobs in TypeScript; no Python. Its import takes a file in
+  one of a fixed list of presets (exact column names, no mapping, no location, no delete): the dashboard puts it on
+  R2 and `imports.ingest` loads it into one ClickHouse table per preset, which feeds `audiences.*`. Segments are
+  built from all the merchant's numbers or a preset's, filtered by recent activity, and gated as in section 2.
+  Only `master` deploys (the dashboard, the API and Windmill, which applies every push to master); database changes
+  are applied by hand; nothing is tested automatically there. Changing a preset or a segment source touches about a
+  dozen files (Prisma migrations, `frontend/lib/importer/presets.ts` and `landing.ts`, `lib/actions/segments.ts`, the
+  segment canvas, a ClickHouse table file).
 - **Questions for Noah**:
-  - The main system: how opt-outs, last messages and transactions are stored (needed for the Do Not Call / 18-month
-    rule). Merchant IDs are whole numbers; phone numbers are stored as 10-digit numbers without the leading 1.
-  - The Do Not Call list: which list (national, state, internal), where it comes from, how often it changes.
-  - The 18-month established business relationship: counted from which date (last transaction, last visit, last
-    inquiry?) and per business or across businesses.
-  - Cell-phone check: which provider (e.g. Twilio Lookup, paid per number), and whether landlines are removed or
-    only flagged.
-  - Should a tag export also have the business ID or the service in the file, or one file per business is right?
+  - Should Customer Records' finds also cover the main app's other data (the old FileMaker exports, Toast, the
+    customer list), and which fields of those count (only some have names, emails or addresses)?
+  - VoIP numbers: the main app treats them as not mobile (left out of segments); keep it so?
   - Section 2's carried-over and to-confirm lists.
 - **Independent test of 1.0.0** (check 6, a separate Claude agent working from the README and user guide): it
   found nine defects, all fixed before release and covered by `tests/test_records_find_edges.py` and
@@ -265,6 +278,16 @@ Customer Records (the repository is `data-warehouse`), and version 1.0.0.
   `\r`) or a 130,000-character cell showed a traceback instead of a message. Not fixed (none occur in the real data):
   a street given as a list is left out; a file saved in Mac Roman is read as Windows encoding; ClickHouse's own TSV
   export escapes an apostrophe as `\'`, which leaves such an address as raw JSON (the page says to export CSV).
+- **Independent test of 1.7.0** (limited: sending to the bucket, about 25 minutes, with a stand-in S3 server, the
+  real merchant list and a 100,000-row file): no serious defect. Fixed and tested before release
+  (`test_records_bucket.py`): a deletion could go while its import's send was still being tried, against the
+  documented order (now held until that send is settled; when a failed or cut-off try may have landed, the deletion
+  still goes, after it); a send cut off by a restart waited 30 minutes with *Try again now* doing nothing (now taken
+  over at the sender's first run); a deleted tag's last file could carry a name from before a rename; a merchant ID
+  of non-ASCII digits was accepted for sending; BUCKET_FILES.md promised every cell in `source` (empty cells were
+  never kept; the doc now says so). Confirmed: the files match BUCKET_FILES.md (odd cells, a record without a number,
+  several numbers, 1600 birthdays, UTC times), 100,000 rows sent in about 10 s, retry waits, settings added later,
+  the secret never in pages, the database or logs, the reset script with sends present.
 - Limits known and accepted: [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
 ## 5. Taking fixes from the file converter
