@@ -36,5 +36,7 @@ anthropic>=1.0
 bcrypt>=4.1
 # PostgreSQL driver and connection pool: Customer Records' database (businesses, records, tags)
 psycopg[binary,pool]>=3.2
+# S3 client: sends imports and tags to the main app's bucket (Cloudflare R2), records.bucket (1.7.0)
+boto3>=1.36
 # Automated tests:  python -m pytest -q
 pytest>=8.0
