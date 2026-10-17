@@ -38,13 +38,16 @@ connected to the main system. The conversion engine it is built on is described 
  Tag the found set ───────────────────────────────►  records.store.add_to_tag / remove_from_tag (+ tag_events)
  Tag export ──────────────────────────────────────►  records.tags.export_table (one row per number, merge rules)
                                                       → converter.output.write_output (import format)
+ (background, 1.7.0) ─────────────────────────────►  records.bucket.BucketSender: completed imports, deletions,
+                                                      tags exported / sent → CSV files in the main app's bucket
+                                                      (R2, S3 API, boto3) for its ClickHouse
 ```
 
 ## Two databases
 
 | | Holds | Why |
 |---|---|---|
-| **PostgreSQL** (`DATABASE_URL`) | businesses (the main app's merchants), locations, services, imports, records, record_phones, tags, tag_records, tag_events | the business data: shared, searched, eventually connected to the main system |
+| **PostgreSQL** (`DATABASE_URL`) | businesses (the main app's merchants), locations, services, imports, records, record_phones, tags, tag_records, tag_events, bucket_sends | the business data: shared, searched, eventually connected to the main system |
 | **SQLite** `data/converter.db` | import jobs (status, progress, mapping and schema snapshots, summary), templates, drafts, users, preferences | the converter's own app state, unchanged, so its pages (Imports, side by side, templates) work as they are |
 
 The link: a PostgreSQL import has `job_id` (the SQLite import's id, the number shown on the Imports page), and the
@@ -57,6 +60,7 @@ job's `read_options` has `records_import_id`. See KNOWN_ISSUES #1 for what that 
 | `config.py` | `DATABASE_URL`, `RECORDS_SCHEMA_PATH`, `EXPORT_SCHEMA_PATH`, `IMPORT_WORKERS` (5 here; the converter's default is 2), `DATABASE_POOL_SIZE` (16) (`.env` is loaded by `converter.config`). |
 | `db.py` | Connection pool (psycopg 3 + psycopg_pool); `ensure_database` (creates the database when allowed, with ICU case rules so Å = å); `Database.setup`: `pg_trgm`, the fixed tables, one column per record field (added when missing; a retyped field only warns, except a date-and-time field made `date_only`, converted to a date), indexes (trigram for text and the split parts of whole names, b-tree for the rest and for the Date expression), and `collation` (None when the database folds accented letters; otherwise an explicit collation for finds, `_case_collation`); `check_fields` (names must be valid columns, one phone field); `date_fields` / `date_expr` (the Date: the later of the last visit and last call, as a day). |
 | `store.py` | `RecordStore`: merchants (table `businesses`, its 1.0 name; "business" in the code means a merchant) and locations (`load_merchants`: the main app's lists, missing ones marked removed, never deleted; `list_locations`), services, imports (`create_import`: one current location of its merchant, the only one taken by itself), records, tags; the rules of one merchant per tag, unique names, deletions only when unused, tag history. All SQL except finds and exports. |
+| `bucket.py` | Sending to the main app's bucket (1.7.0): the files (`write_records_file`: one row per record; `write_delete_file`: the same keys, `is_deleted` 1; `write_tag_file`: a tag snapshot in the import format plus the tag's columns, a first row naming the tag), their names (`object_key`, `new_ulid`: the main app's `<ULID>-<merchant>-<name>.csv`), `BucketClient` (boto3, path-style, checksums only when required; errors without the key), `BucketSender` (a background thread over the queue `bucket_sends`: queues completed imports whose run finished, sends in order, retries 1, 2, 4… minutes up to an hour, recovers a send cut off by a restart; nothing without `BUCKET_*`) and what the pages read (`import_sends`, `tag_sends`, `summary`, `retry_now`). The file format: [BUCKET_FILES.md](BUCKET_FILES.md). |
 | `merchants.py` | The main app's merchants and locations (1.6.0): `QUERY` (one row per location, plus one per merchant without one, from ClickHouse's `pg.merchants` / `pg.locations`), `parse_rows`, `rows_from_file` (the console's CSV/TSV export, NULL as `\N`), `fetch_clickhouse` (ClickHouse's HTTP interface; user and password in its headers), `MerchantRefresher` (at start, every `MERCHANTS_REFRESH_MINUTES` in the background, and the Merchants page's button; nothing without `CLICKHOUSE_*`). |
 | `importer.py` | `RecordSink` (the runner's sink): `build_records` (engine audit → one record per file row, typed values, all numbers, the row as written minus skipped columns), `save` (one transaction: COPY records and numbers, complete the import), `discard`; `creation_fallback` (see Tag export). |
 | `fields.py` | What a find can search: the record fields plus Date (an expression, `FindField.expr`), Any field, Full name, Business, Service, Tag, Phone problem, Import #, File name, Record created, Record ID, File row, Column: …; which have pickers instead (`PICKER_KEYS`). First and Last name are searched through `criteria.name_condition` (also the parts of a whole name kept in First name). |
@@ -94,12 +98,13 @@ Kept small so fixes from file-converter apply cleanly ([HANDOFF.md](HANDOFF.md),
 | `businesses` | the main app's merchants: `id` (text: the merchant ID's digits), `name`, `status` (active / archived), `removed_at` (no longer in the main app's list), `synced_at`, `notes` (unused since 1.6.0), created |
 | `locations` | the main app's locations: `id` (its UUID, lower-case), `business_id` (its merchant), `name`, `address`, `kind` (store / office), `removed_at`, `synced_at` |
 | `services` | `id`, `name` (unique, any case), `active` |
-| `imports` | `id`, `job_id`, `business_id`, `location_id` (NULL before 1.6.0), `service_id`, `file_name`, `file_sha1`, `sheet`, `username`, `status` (queued / completed / not completed / deleted), counts (`records`, `phones`, `no_phone`), `first_visit_as`, `columns` (the file's column names) |
+| `imports` | `id`, `uid` (a UUID naming it in the main app's bucket, 1.7.0), `job_id`, `business_id`, `location_id` (NULL before 1.6.0), `service_id`, `file_name`, `file_sha1`, `sheet`, `username`, `status` (queued / completed / not completed / deleted), counts (`records`, `phones`, `no_phone`), `first_visit_as`, `columns` (the file's column names) |
 | `records` | `id`, `import_id` (cascade), `business_id`, `location_id` (the import's), `service_id`, `file_row`, `phone_issue`, `issues` (jsonb), `source` (jsonb: the row as written), `search_text`, and one column per record field |
 | `record_phones` | `record_id` (cascade), `phone` (10 digits), `position` (the order of the phone field's columns, mobile first), `repaired`, `original`; b-tree and trigram indexes |
-| `tags` | `id`, `business_id` (its merchant), `name` (unique per merchant, any case), `notes`, created, updated |
+| `tags` | `id`, `uid` (a UUID, 1.7.0), `business_id` (its merchant), `name` (unique per merchant, any case), `notes`, created, updated |
 | `tag_records` | `tag_id`, `record_id` (both cascade), added at / by |
 | `tag_events` | `tag_id`, at, username, action (created / added / removed / renamed / exported), count, detail |
+| `bucket_sends` | the queue of files for the main app's bucket (1.7.0): `kind` (import / delete / tag), `import_id` (cascade) or `tag_id`, `tag_uid`, `tag_name`, `business_id`, `file_rows` (a deletion's records), `status` (pending / sending / sent / cancelled), `attempts`, `next_try_at`, `claimed_at`, `error`, `object_key`, `rows`, `bytes`, created / by, `sent_at`; one import send and one deletion per import (unique), one pending snapshot per tag |
 | `app_meta` | small facts (pg_trgm available, the version of the loaded name table) |
 | `first_names` | `name` (lower case), `female`, `male`: US first names with how many girls and boys got them, for gender guesses |
 
@@ -161,26 +166,31 @@ another merchant in the main app keeps its records under the merchant they were 
   requests are one form (a list can't follow the merchants picked), so the Locations picker lists only the
   locations of merchants with several.
 
-## Connecting to the main system (later)
+## Connecting to the main system
 
-Started in 1.6.0: merchants and locations are read from the main app's ClickHouse (`records.merchants`). What it
-holds (seen with read access, 2026-10-16): `pg.*` are the main app's PostgreSQL tables seen through ClickHouse;
+Merchants and locations are read from the main app's ClickHouse (`records.merchants`, 1.6.0); completed imports,
+their deletions and tags are sent to its bucket as CSV files (`records.bucket`, 1.7.0; decided 2026-10-17: a
+separate app connected through the bucket first, built into the main app later). What its ClickHouse holds (seen
+with read access, 2026-10-16): `pg.*` are the main app's PostgreSQL tables seen through ClickHouse;
 `default.generic_csv_import` takes files in the converter's import format, per merchant; `default.audience_members`
 (segment, merchant, phone as a 10-digit number) holds the evaluated segments; `audiences.*` has per-number
 activity, consent, Do Not Call (`ndnc`) and mobile checks (`is_mobile`). Planned, from least to most change
 (HANDOFF, decisions):
 
-1. **Export files** (now): tags export the import format.
-2. **Tags as segments**: Customer Records writes each tag's numbers to its own ClickHouse table, and the main app
-   gets a segment type that reads it (its segments are re-evaluated, so rows written into `audience_members`
-   directly would be lost). Needs write access to a `customer_records` database and the main app's side.
-3. **Records in ClickHouse** (2.0; 80M+ records expected): records and record_phones there, the rest in
+1. **Files in the bucket** (1.7.0): every completed import (one row per record), its deletion, each tag's numbers
+   (snapshots), under `data/customer-records/` and `data/customer-records-tags/` (BUCKET_FILES.md). The main app
+   loads them (since 2026-10-15 nothing picks files up from the bucket by itself).
+2. **Tags as segments**: the main app gets a segment source that reads each tag's latest snapshot (its segments
+   are re-evaluated, so rows written into `audience_members` directly would be lost). The main app's side.
+3. **Into the main app** (later): Customer Records' importer, finds and tags rebuilt in sendsational (TypeScript),
+   the converter ported with the 406-file check as its test (HANDOFF, decisions).
+4. **Records in ClickHouse** (2.0; 80M+ records expected): records and record_phones there, the rest in
    PostgreSQL; finds compile to ClickHouse SQL instead (`criteria.py` and `find.py` are where that changes); a load
    test of 80M records first.
 
-The checks planned before tagging (cell phones, Do Not Call with the 18-month established business relationship)
-belong between the found set and the tag: a step that removes numbers from what `add_to_tag` adds (or from the
-export), with the reason kept per number, like the converter's bad rows.
+The checks on numbers (cell phones, opt-outs, Do Not Call with the 18-month established business relationship) are
+done by the main app when it evaluates a segment (its `audiences.eligible` view and the evaluation's gates), not
+here.
 
 ## Tests
 
@@ -201,7 +211,8 @@ database. Without PostgreSQL those tests are skipped with a message; the convert
 | `test_server_setup.py` | the Docker setup: logins always on, the port published on the server itself only, no admin password shipped, five imports at once |
 | `test_records_tags.py` | export format, one row per number, merge rules, consent blank, no-number records, creation date per import, file name, parity on the sample files |
 | `test_records_store.py` | merchants and locations (loading the main app's lists: new, changed, removed, back; bad lists change nothing), one current location per import, services, tags (one merchant, names, history), setup (repeatable, new fields, retyped fields, field names, a last visit from 1.1.0 converted to a date, a database from before 1.6.0), `scripts/reset_records.py` |
+| `test_records_bucket.py` | sending to the main app's bucket: ULIDs and names (read back by the main app's expressions), an import's file (every record, IDs, numbers, typed values, the row as in the file), waiting for the run to finish, deletion files (sent, or never sent when deleted first), tag snapshots (first row, numbers, one waiting at a time, deleted tags), retries and their waits, a send cut off by a restart, nothing without settings, only main app merchants, the background thread, boto3 against a stand-in S3 server (signature, refusal, unreachable, never the secret) |
 | `test_records_merchants.py` | the merchant and location lists: rows from ClickHouse and from the console's CSV/TSV export (NULL as `\N`, 63.0), the main app's JSON addresses on one line, mistakes explained, ClickHouse addresses, reading a stand-in ClickHouse (headers, errors without the password), the background refresher |
-| `test_records_app.py` | the real app.py with AppTest: database errors, Merchants/Services, New import with merchant, location (filled in, chosen, none) and service, import page, Find (the shown boxes, Add a field and ✕, `*` and `=` alone, a day of the week in Date and the Date column, pickers, an Omit request, blank find, errors, omit selected), tag creation, tag export, Fields, logins (sign-in, who added a service, Users for admins only, a deleted account signed out), finds by location of a corporate account |
+| `test_records_app.py` | the real app.py with AppTest: database errors, Merchants/Services, New import with merchant, location (filled in, chosen, none) and service, import page, Find (the shown boxes, Add a field and ✕, `*` and `=` alone, a day of the week in Date and the Date column, pickers, an Omit request, blank find, errors, omit selected), tag creation, tag export, Fields, logins (sign-in, who added a service, Users for admins only, a deleted account signed out), finds by location of a corporate account, sending to the main app (off without settings; imports, a tag, a refusal with Try again now and the sidebar warning, against a stand-in bucket) |
 
 Checks before a release: [HANDOFF.md](HANDOFF.md) → Checks.
