@@ -30,6 +30,7 @@ database on first start. On one computer there is no login; the server setup has
 | [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) | developers | limits and quirks worth knowing before changing code |
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | everyone | what changed in each version |
 | [docs/HANDOFF.md](docs/HANDOFF.md) | whoever continues the work | how changes are made and delivered, the business's decisions, open questions |
+| [docs/BUCKET_FILES.md](docs/BUCKET_FILES.md) | the main app's developers | the files sent to the main app's bucket: folders, names, columns, deletions, tag snapshots, and ClickHouse tables that load them |
 | [docs/converter/](docs/converter/README.md) | everyone | the file converter's documents (0.21.2): every rule for phone numbers, dates and column matching used by each import |
 
 ```
@@ -39,6 +40,8 @@ New import:  merchant + location + service → upload → columns matched (templ
 Find:        find requests (AND within a request, OR between requests, Omit) → found set → constrain / extend /
              omit → add to a tag, or download as CSV
 Tags:        one merchant per tag → export: one row per unique phone number, in the converter's import format
+Main app:    every completed import, its deletion, and each tag exported or sent → CSV files in the main app's
+             bucket (Cloudflare R2), for its ClickHouse; sent in the background, retried until they go
 ```
 
 ## Pages
@@ -46,10 +49,10 @@ Tags:        one merchant per tag → export: one row per unique phone number, i
 | Page | What it's for |
 |---|---|
 | **Find** | Find records with requests (see [Finding records](#finding-records)); limit to merchants, locations and services; see the found set, one record's details (every field, its numbers, the row as in the file, its tags); omit records; add the found set to a tag or make a new tag from it; download the found set as CSV. |
-| **Tags** | Every tag with its merchant, records and unique numbers. One tag: export (download and preview), its records (remove some), rename, notes, delete, and its history (who added or removed how many records, exports). |
+| **Tags** | Every tag with its merchant, records and unique numbers. One tag: export (download and preview), *Send to the main app*, its records (remove some), rename, notes, delete, and its history (who added or removed how many records, exports). |
 | **New import** | Choose the merchant, its location (filled in when it has one) and the service, upload a file, check how it was read, review the column mapping (the converter's page), start the import. Warns when the same file was already imported for that merchant. |
-| **Imports** | Every import with its merchant, location, service, status, progress and records. One import: records stored, numbers, rows without a usable number, side by side (original vs cleaned), what changed, the mapping used, the mistake check, *Show this import's records in Find*, *Delete this import's records*. |
-| **Merchants** | The main app's merchants and their locations, with their IDs, imports, records and tags; loaded from the main app (automatically from its ClickHouse, or from a CSV exported there and uploaded here), never typed in. See [Merchants and locations](#merchants-and-locations). |
+| **Imports** | Every import with its merchant, location, service, status, progress and records. One import: records stored, numbers, rows without a usable number, side by side (original vs cleaned), what changed, the mapping used, the mistake check, *Show this import's records in Find*, *Delete this import's records*, and whether it was sent to the main app. |
+| **Merchants** | The main app's merchants and their locations, with their IDs, imports, records and tags; loaded from the main app (automatically from its ClickHouse, or from a CSV exported there and uploaded here), never typed in. See [Merchants and locations](#merchants-and-locations). Also *Sending to the main app*: what was sent, what waits and why. |
 | **Services** | The list every import picks from: add, rename, deactivate (no longer offered; its records keep it), delete one no import uses. |
 | **Templates** | Saved column mappings per file layout (as in the converter). The merchant, location and service are chosen for each import, not saved. |
 | **Fields** | The record fields and the export format, read-only. |
@@ -79,7 +82,8 @@ merchant (with the main app's name); the others are marked *no longer in the mai
 way they keep their imports and records, without a location. To start clean instead, stop the app and run
 `.venv/bin/python scripts/reset_records.py --yes` (Docker: `docker compose exec app python scripts/reset_records.py
 --yes`): it deletes every merchant, location, import, record and tag, and the import jobs with their files; services,
-users and templates stay. Without `--yes` it only says what it would delete.
+users and templates stay. Without `--yes` it only says what it would delete. Files already sent to the main app's
+bucket stay there (it says how many).
 
 ## Importing
 
@@ -248,9 +252,30 @@ For an import whose file had **no last-activity column at all**, the converter w
 records therefore exports exactly what the converter makes of that file — apart from consent and repeated numbers
 being merged — which `scripts/regression/parity.py` checks on 406 files.
 
-**Not built yet** (planned before tagging, and partly dependent on the main system): checking that numbers are cell
-phones, removing numbers on the Do Not Call list unless within an 18-month established business relationship, and
-connecting to the main system. See [docs/HANDOFF.md](docs/HANDOFF.md) → Open items.
+Checking that numbers are cell phones and removing numbers on the Do Not Call list (unless within the established
+business relationship) are done by the main app when it builds a segment, not here.
+
+## Sending to the main app
+
+Customer Records runs beside the main app and hands its data over through the main app's **bucket** (Cloudflare
+R2), as CSV files the main app loads into its ClickHouse (decided 2026-10-17: a separate app first, connected
+through the bucket; built into the main app later). With `BUCKET_ENDPOINT`, `BUCKET_NAME`, `BUCKET_ACCESS_KEY_ID`
+and `BUCKET_SECRET_ACCESS_KEY` in `.env`, a background sender puts there:
+
+| When | File (under `data/`) |
+|---|---|
+| an import completes | `customer-records/<ULID>-<merchant>-import-<uid>.csv`: one row per record — IDs (record, import, merchant, location, service), every field, all its numbers, the row's cells as in the file |
+| the records of an import that was sent (or tried) are deleted | `customer-records/<ULID>-<merchant>-import-<uid>-deleted.csv`: the same records, marked deleted; it waits for the import's own send |
+| a tag is exported, or sent with *Send to the main app* | `customer-records-tags/<ULID>-<merchant>-tag-<uid>.csv`: all its numbers, in the import format (a snapshot: the newest replaces the earlier ones) |
+| a tag that was sent is deleted | the same name, saying the tag was deleted |
+
+Files go one at a time, in order; one that fails (bucket unreachable, key refused) waits 1, 2, 4… minutes (at most
+an hour) and is tried again until it goes. Each import's and tag's page says whether it was sent, when and as which
+file, or why not yet (with *Try again now*); the Merchants page lists the latest sends, and the sidebar warns while
+something can't be sent. Imports completed before the bucket was set up are sent once it is. Only merchants of the
+main app are sent (an ID that is a number). Columns, formats, deletions and suggested ClickHouse tables:
+[docs/BUCKET_FILES.md](docs/BUCKET_FILES.md). The main app stopped picking files up from its bucket by itself on
+2026-10-15, so its developer loads these folders (HANDOFF → Open items).
 
 ## Running it
 
@@ -327,6 +352,7 @@ records); each import's files are kept 30 days (`FILE_RETENTION_DAYS`). With les
 | PostgreSQL | merchants and locations (copies of the main app's), services, imports (merchant, location, service, file, who, when, counts), records (every field, the row as in the file, why there's no usable number), their phone numbers, tags, tag records and tag history. Kept until deleted (an import's records can be deleted on its page). |
 | `data/converter.db` (SQLite) | the app's own state, as in the converter: import jobs and progress, templates, drafts, users, display preferences |
 | `data/imports/<id>/` | each import's original file and side-by-side data; **deleted after `FILE_RETENTION_DAYS` (30)** — the records stay |
+| the main app's bucket | the files sent there (see [Sending to the main app](#sending-to-the-main-app)); Customer Records never deletes them, and `reset_records.py` doesn't either |
 
 The records hold customers' phone numbers, names, emails and addresses: keep the database on an encrypted disk and
 the app on a trusted network (the server setup has logins on).
@@ -347,6 +373,11 @@ Customer Records' own:
 | `CLICKHOUSE_URL` | — | the main app's ClickHouse (`https://<host>:8443`, or just the host), where merchants and locations are read |
 | `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD` | — | its app user (may read `pg.merchants` and `pg.locations`); without these, merchants are loaded from a file on the Merchants page |
 | `MERCHANTS_REFRESH_MINUTES` | 60 | minutes between automatic loads of the merchants (0 = only with the Merchants page's button) |
+| `BUCKET_ENDPOINT` | — | the main app's bucket, its S3 API address (R2: `https://<account id>.r2.cloudflarestorage.com`); see [Sending to the main app](#sending-to-the-main-app) |
+| `BUCKET_NAME` | — | the bucket (`master-bucket`) |
+| `BUCKET_ACCESS_KEY_ID`, `BUCKET_SECRET_ACCESS_KEY` | — | a key that may write to it; without the four, nothing is sent |
+| `BUCKET_PREFIX` | `data/` | put before the folders `customer-records/` and `customer-records-tags/` |
+| `BUCKET_REGION` | `auto` | the region (R2: `auto`) |
 | `DEFAULT_PAGE` | `new` | first page: `new`, `imports` or `find` |
 | `APP_TITLE` | Customer Records | browser tab title |
 | `PORT` | 8502 | `run_local.sh` only: the port (the file converter keeps 8501); not read from `.env` |
