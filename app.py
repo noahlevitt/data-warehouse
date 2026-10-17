@@ -99,6 +99,7 @@ from converter.services import (check_for_mistakes, initial_mapping, make_assist
 from converter.storage import ImportRecord, Store
 from converter.ui_format import fmt_dt, fmt_duration, fmt_eta, fmt_size, status_color, status_text
 from records import __version__
+from records import bucket as records_bucket
 from records import ui as records_ui
 from records.config import get_records_settings
 from records.db import Database, DatabaseError, ensure_database
@@ -292,6 +293,26 @@ def get_merchant_refresher() -> MerchantRefresher:
 
 
 @st.cache_resource
+def get_bucket_sender() -> records_bucket.BucketSender:
+    """Return the one sender of files to the main app's bucket (records.bucket.BucketSender), started.
+
+    With BUCKET_ENDPOINT / _NAME / _ACCESS_KEY_ID / _SECRET_ACCESS_KEY set, a background thread sends every
+    completed import, the deletion of an import's records and the tags exported or sent, in the order queued,
+    retrying failures; without them it does nothing (what is queued waits).
+    """
+    db, _ = get_records_db()
+    client = records_bucket.BucketClient(rsettings.bucket_endpoint, rsettings.bucket_name,
+                                         rsettings.bucket_access_key_id, rsettings.bucket_secret_access_key,
+                                         rsettings.bucket_region)
+    # The thread reads the field files itself (Streamlit's caches belong to page runs), once per file sent.
+    sender = records_bucket.BucketSender(db, get_store(), lambda: load_schema(rsettings.records_schema_path),
+                                         lambda: load_schema(rsettings.export_schema_path), client,
+                                         prefix=rsettings.bucket_prefix)
+    sender.start()
+    return sender
+
+
+@st.cache_resource
 def _schema_cache(path: str, mtime: float) -> TargetSchema:
     """Load and validate the schema YAML at `path` (the record fields, or the export format).
 
@@ -377,6 +398,8 @@ runner = get_runner()
 # The main app's merchants and locations: loaded from its ClickHouse in the background when due (CLICKHOUSE_*).
 merchant_refresher = get_merchant_refresher()
 merchant_refresher.maybe_refresh()
+# Completed imports, deletions and tags go to the main app's bucket in the background (BUCKET_*; records.bucket).
+bucket_sender = get_bucket_sender()
 assistant = get_assistant()
 # Before sign-in there is no user preference yet: apply the mode last chosen in this browser (if any), so the login
 # page already matches.
@@ -1467,6 +1490,9 @@ def _import_list(mine: bool, statuses: list[str], search: str, polling: bool) ->
         return
     # Customer Records: each job's merchant, location, service and stored records, from PostgreSQL.
     linked = records.imports_for_jobs([r.id for r in recs])
+    # And where each stands with the main app's bucket (records.bucket), when sending is set up.
+    sent = (records_bucket.import_sends(rdb, [x["id"] for x in linked.values()])
+            if bucket_sender.configured else {})
     table = pd.DataFrame([{
         "#": r.id,
         "File": r.filename,
@@ -1482,6 +1508,7 @@ def _import_list(mine: bool, statuses: list[str], search: str, polling: bool) ->
         "Records": linked[r.id]["records"] if linked.get(r.id, {}).get("status") == "completed" else None,
         "No usable number": linked[r.id]["no_phone"] if linked.get(r.id, {}).get("status") == "completed" else None,
         "Template": r.template_name or "",
+        "Main app": records_ui.bucket_short(sent.get(linked[r.id]["id"])) if r.id in linked else "",
     } for r in recs])
     st.caption("Select a row to open the import.")
     event = st.dataframe(
@@ -1653,6 +1680,10 @@ def _completed_view(rec: ImportRecord) -> None:
                 help="Stored and searchable; never in a tag's export.")
     m[4].metric("Empty rows", f"{rec.blank_rows:,}")
     m[5].metric("Took", fmt_duration(rec.elapsed()))
+    if linked:
+        send = records_bucket.import_sends(rdb, [linked["id"]]).get(linked["id"])
+        if not (deleted and send is None):  # records deleted before they were sent: nothing to say
+            records_ui.bucket_line(ctx, send, "records", f"imp_{rec.id}")
     if linked and not deleted and st.button("Show this import's records in Find"):
         records_ui.go_find(ctx, {"t": "find", "requests": [{"omit": False, "criteria": [["import", str(rec.id)]]}]},
                            f"Import #{rec.id} · {rec.filename}")
@@ -1793,10 +1824,12 @@ def _delete_records_section(rec: ImportRecord, linked: dict) -> None:
                                (linked["id"],))
         st.caption(f"Deletes the {linked['records']:,} records of this import"
                    + (" and takes them out of these tags: " + ", ".join(f"{h['name']} ({h['n']:,})" for h in hit)
-                      if hit else "") + ". The import can then be run again with a corrected mapping.")
+                      if hit else "") + ". The import can then be run again with a corrected mapping. If it was "
+                   "sent to the main app, its deletion is sent too.")
         sure = st.checkbox("Yes, delete these records", key=f"del_imp_ok_{rec.id}")
         if st.button("Delete records", disabled=not sure, key=f"del_imp_{rec.id}"):
             res = records.delete_import(linked["id"], user["username"])
+            bucket_sender.wake()
             st.success(f"Deleted {res['records']:,} records.")
             st.rerun()
 
@@ -2240,7 +2273,7 @@ def page_services() -> None:
 _landing = os.getenv("DEFAULT_PAGE", "new")  # "new", "imports" or "find": which page opens first
 # What records/ui.py's pages need from here (the pages themselves are filled in below, once they exist).
 ctx = records_ui.Ctx(db=rdb, records=records, schema=schema, export=export_schema, user=user, tz=TZ,
-                     open_import=open_import, merchants=merchant_refresher)
+                     open_import=open_import, merchants=merchant_refresher, sender=bucket_sender)
 # url_path is the address of each page (e.g. /imports?id=12), so links and bookmarks keep working.
 PAGE_NEW = st.Page(page_new_import, title="New import", icon="⬆️", url_path="new",
                    default=_landing not in ("imports", "find"))
@@ -2271,6 +2304,12 @@ with st.sidebar:
     st.caption(f"{records.totals()['records']:,} records")
     for w in db_warnings:
         st.caption("⚠️ " + w)
+    if bucket_sender.configured:
+        waiting = records_bucket.summary(rdb, recent=0)
+        if waiting["retrying"]:
+            n = waiting["retrying"]
+            st.caption(f"⚠️ {n:,} file{'s' if n != 1 else ''} not sent to the main app yet: {waiting['error']} "
+                       "See **Merchants**.")
     st.divider()
     # With AUTH_MODE=none there are no accounts (everyone is the local admin): no name, password or sign-out.
     if logins_on:
