@@ -23,6 +23,7 @@ Modules
     * ``db``       — the connection pool and the tables, created and extended from the record fields at start.
     * ``store``    — merchants and locations, services, imports, records, tags (all SQL outside finds and exports).
     * ``merchants``— the main app's merchants and locations, read from its ClickHouse or from a file exported there.
+    * ``bucket``   — sends completed imports, their deletions and tags to the main app's bucket as CSV files.
     * ``importer`` — the import sink: a converted file → records and their phone numbers.
     * ``runner``   — runs each import in its own worker process, so several convert at the same time.
     * ``fields``   — what can be searched: the record fields plus business, service, import, tag, other columns.
@@ -36,4 +37,4 @@ Everything except ``ui`` is free of Streamlit and is tested against a real Postg
 
 # Customer Records' own version (shown in the sidebar, tagged vX.Y.Z in git). The conversion engine keeps its own
 # number (converter.__version__, file-converter's) so it is clear which converter release the engine came from.
-__version__ = "1.6.1"
+__version__ = "1.7.0"
