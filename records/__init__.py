@@ -37,4 +37,6 @@ Everything except ``ui`` is free of Streamlit and is tested against a real Postg
 
 # Customer Records' own version (shown in the sidebar, tagged vX.Y.Z in git). The conversion engine keeps its own
 # number (converter.__version__, file-converter's) so it is clear which converter release the engine came from.
-__version__ = "1.7.0"
+# On the sendsational branch (the connection to the main app's bucket): <version>-sendsational, tagged
+# sendsational-<version>.
+__version__ = "1.7.0-sendsational"
