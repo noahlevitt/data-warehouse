@@ -21,6 +21,17 @@ CLICKHOUSE_PASSWORD    —                                            pg.locatio
                                                                     are loaded from a file on the Merchants page.
 MERCHANTS_REFRESH_     60                                           Minutes between automatic loads (0 = only with
 MINUTES                                                             the Merchants page's button).
+BUCKET_ENDPOINT        —                                            The main app's bucket, S3 API address (Cloudflare
+                                                                    R2: ``https://<account id>.r2.cloudflarestorage.
+                                                                    com``), where completed imports, deletions and
+                                                                    tags are sent (records.bucket, 1.7.0).
+BUCKET_NAME            —                                            The bucket (e.g. ``master-bucket``).
+BUCKET_ACCESS_KEY_ID   —                                            A key that may write to it. Without the endpoint,
+BUCKET_SECRET_ACCESS_  —                                            the name and the key, nothing is sent.
+KEY
+BUCKET_PREFIX          data/                                        Put before the folders ``customer-records/`` and
+                                                                    ``customer-records-tags/``.
+BUCKET_REGION          auto                                         The region (R2: auto).
 =====================  ===========================================  ================================================
 
 The converter's other settings (DATA_DIR, FILE_RETENTION_DAYS, Claude, logins…) still apply; see
@@ -54,6 +65,12 @@ class RecordsSettings:
     clickhouse_user: str = ""
     clickhouse_password: str = field(default="", repr=False)  # never printed
     merchants_refresh_minutes: int = 60
+    bucket_endpoint: str = ""
+    bucket_name: str = ""
+    bucket_access_key_id: str = ""
+    bucket_secret_access_key: str = field(default="", repr=False)  # never printed
+    bucket_prefix: str = "data/"
+    bucket_region: str = "auto"
 
 
 def get_records_settings() -> RecordsSettings:
@@ -71,4 +88,21 @@ def get_records_settings() -> RecordsSettings:
                            clickhouse_url=(os.getenv("CLICKHOUSE_URL") or "").strip(),
                            clickhouse_user=(os.getenv("CLICKHOUSE_USER") or "").strip(),
                            clickhouse_password=os.getenv("CLICKHOUSE_PASSWORD") or "",
-                           merchants_refresh_minutes=max(0, int(os.getenv("MERCHANTS_REFRESH_MINUTES") or 60)))
+                           merchants_refresh_minutes=max(0, int(os.getenv("MERCHANTS_REFRESH_MINUTES") or 60)),
+                           bucket_endpoint=(os.getenv("BUCKET_ENDPOINT") or "").strip(),
+                           bucket_name=(os.getenv("BUCKET_NAME") or "").strip(),
+                           bucket_access_key_id=(os.getenv("BUCKET_ACCESS_KEY_ID") or "").strip(),
+                           bucket_secret_access_key=(os.getenv("BUCKET_SECRET_ACCESS_KEY") or "").strip(),
+                           bucket_prefix=bucket_prefix(os.getenv("BUCKET_PREFIX")),
+                           bucket_region=(os.getenv("BUCKET_REGION") or "").strip() or "auto")
+
+
+def bucket_prefix(value: str | None) -> str:
+    """BUCKET_PREFIX as a folder path: no leading slash, one trailing slash ("" = the bucket's top level).
+
+    Left unset it is ``data/``, where the main app keeps its import files; set to an empty value, the top level.
+    """
+    if value is None:
+        return "data/"
+    value = value.strip().strip("/")
+    return f"{value}/" if value else ""
