@@ -49,6 +49,19 @@ converter's own list (conversion, mapping, Claude, app) still applies to every i
 | 19 | **A tag holds records, not a search**: new imports don't join it. | Add found sets again after new imports. | `store.add_to_tag` |
 | 20 | **The Do Not Call list, the 18-month established business relationship and the cell-phone check aren't built.** | Exports can include landlines and numbers on the Do Not Call list; the main system must still apply its own checks. | HANDOFF → Open items |
 
+## Sending to the main app
+
+| # | Issue | Effect | Where |
+|---|---|---|---|
+| 45 | **The main app doesn't load the files by itself yet** (1.7.0). Since 2026-10-15 nothing picks up files from its bucket; an import lands when its dashboard runs `imports.ingest`. | The files wait in `data/customer-records/` and `data/customer-records-tags/` until the main app loads those folders (docs/BUCKET_FILES.md has tables and queries for it). *Sent* means in the bucket, not in ClickHouse. | the main app |
+| 46 | **A deletion reaches the records, not what the main app made of them.** Deleting an import's records sends a deletion file; the main app's audiences fold only adds, so the numbers and dates it took from the import stay there unless rebuilt. | Delete records only to fix a mapping, and expect the main app's segments to keep the old activity until its side handles deletions. | `bucket.write_delete_file`, the main app |
+| 47 | **A tag's snapshot is built when it is sent, not when it was exported** (one waits at a time per tag). | If the tag changes between the export and the send (seconds, or longer while the bucket can't be reached), the main app gets the newer contents, not the downloaded file's. | `bucket.write_tag_file`, `store.queue_tag_send` |
+| 48 | **Imports completed before the bucket was set up are all sent once it is**, and a big import is one file in one request (R2 takes up to 5 GB per file). | Setting up the bucket on a full database sends everything, one file at a time. | `BucketSender.queue_completed_imports` |
+| 49 | **`reset_records.py` doesn't touch what was sent.** It empties the queue and history here; the files stay in the bucket and in the main app. New imports get new UUIDs, so nothing clashes. | The main app keeps the test data sent before a reset until it is removed there; the script says how many files went. | `scripts/reset_records.py` |
+| 51 | **One app server per database sends.** A sender takes over, at its start, every send another process left half done (meant for a server that stopped during a send). | Two app servers on one database would each take over the other's sends at their start: the same file sent twice (harmless: same contents, the later wins). | `BucketSender.run_once` |
+| 52 | **A deletion can arrive for an import file that never did.** An upload that failed or was cut off can still have reached the bucket, so deleting its records sends the deletion anyway, after the import's send is given up. | The main app may load a deletion file whose keys match nothing (no effect with `FINAL`). | `store.queue_import_deletion` |
+| 50 | **Only merchants of the main app are sent** (an ID that is a number). Businesses typed in by hand before 1.6.0 aren't, and their tags can't be. | Their imports show nothing under *Main app*; reset or re-import them for main app merchants. | `BucketSender.queue_completed_imports`, `store.queue_tag_send` |
+
 ## App
 
 | # | Issue | Effect | Where |
