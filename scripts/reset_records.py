@@ -13,7 +13,8 @@ works on the same PostgreSQL database and data folder as the app (``DATABASE_URL
 ``.env`` / environment settings). Stop the app first, so no import is running.
 
 Deleted: in PostgreSQL every merchant, location, import, record (and its phone numbers) and tag (with its records
-and history), and when the merchants were last loaded; in the data folder every import job, its stored files, the
+and history), what was sent to the main app's bucket (1.7.0: the list only; the files sent stay there, and the
+script says how many), and when the merchants were last loaded; in the data folder every import job, its stored files, the
 New import drafts, and the converter's number history (``number_log``, not used by Customer Records). Kept: the
 services, users, templates (mappings), display preferences and the name table. It refuses to run when the data
 folder has no ``converter.db`` (a wrong ``DATA_DIR`` would otherwise empty the database and leave the jobs).
@@ -38,7 +39,8 @@ import psycopg  # noqa: E402
 from converter.config import get_settings  # noqa: E402
 from records.config import get_records_settings  # noqa: E402
 
-TABLES = ["tag_events", "tag_records", "tags", "record_phones", "records", "imports", "locations", "businesses"]
+TABLES = ["bucket_sends", "tag_events", "tag_records", "tags", "record_phones", "records", "imports", "locations",
+          "businesses"]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -59,6 +61,11 @@ def main(argv: list[str] | None = None) -> int:
             jobs = s.execute("SELECT count(*) FROM imports").fetchone()[0]
         print(f"PostgreSQL ({url.rsplit('@', 1)[-1]}): " + ", ".join(f"{n:,} {t}" for t, n in counts.items()))
         print(f"Data folder ({data}): {jobs:,} import jobs with their files, and the New import drafts")
+        if "bucket_sends" in tables:
+            sent = c.execute("SELECT count(*) FROM bucket_sends WHERE status = 'sent'").fetchone()[0]
+            if sent:
+                print(f"Note: {sent:,} file(s) were already sent to the main app's bucket (imports, deletions, tags). "
+                      "This doesn't remove them there, or from the main app's ClickHouse.")
         if not args.yes:
             print("Nothing deleted. Run again with --yes to delete all of it.")
             return 0
