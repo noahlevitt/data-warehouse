@@ -64,8 +64,13 @@ change them only when a converter fix is ported in (section 5).
 - Changes go to Noah as a git bundle, `data-warehouse-updateN.bundle`, numbered in order. The repository itself
   came as `data-warehouse-1.0.0.bundle` (complete, no prerequisites); 1.0.1 came as update1, 1.0.2 as update2,
   1.1.0 as update3, 1.2.0 as update4, 1.2.1 as update5, 1.3.0 as update6, 1.3.1 as update7, 1.4.0 as update8,
-  1.5.0 as update9, 1.6.0 as update10, 1.6.1 as update11 (with 1.6.0, for a copy still on 1.5.0) and 1.7.0 as
-  update12, so the next is `data-warehouse-update13.bundle`. Update this line with each bundle.
+  1.5.0 as update9, 1.6.0 as update10 and 1.6.1 as update11 (with 1.6.0, for a copy still on 1.5.0). update12 (this
+  work as 1.7.0 on `main`) was withdrawn before it was installed; the `sendsational` branch came as update13
+  (1.7.0-sendsational), so the next is `data-warehouse-update14.bundle`. Update this line with each bundle.
+- **Branches** (Noah, 2026-10-17): `main` is the standalone app; `sendsational` holds the connection to the main
+  app through its bucket (records.bucket, BUCKET_FILES.md), which needs the main app's side to work. Its versions
+  are `<version>-sendsational`, tagged `sendsational-<version>`; a bundle for it carries the branch
+  (`git fetch <bundle> sendsational:sendsational`) instead of moving `main`.
 
   ```bash
   git bundle create ../data-warehouse-updateN.bundle main vX.Y.Z ^vPREVIOUS
