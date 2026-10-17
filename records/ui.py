@@ -33,6 +33,7 @@ from psycopg import sql
 
 from converter.schema import TargetSchema
 
+from . import bucket as BK
 from . import find as F
 from .criteria import SYNTAX
 from .db import Database, date_fields
@@ -62,6 +63,7 @@ class Ctx:
     open_import: Callable[[int], None]
     pages: dict[str, Any] = field(default_factory=dict)   # st.Page objects by name ("find", "tags", …)
     merchants: Any = None                                  # records.merchants.MerchantRefresher (or None)
+    sender: Any = None                                     # records.bucket.BucketSender (or None)
 
 
 # ---------------------------------------------------------------------------------------------------- helpers
@@ -95,6 +97,54 @@ def _when(ts, tz: str) -> str:
 def _show_value(v, weekday: bool = True) -> str:
     """A record value for the screen: dates as "Fri, 10/9/2026", date-times with the time (records.find.shown)."""
     return F.shown(v, weekday)
+
+
+def bucket_short(send: dict | None) -> str:
+    """Where an import stands with the main app's bucket, in a word or two (the Imports list)."""
+    if send is None:
+        return ""
+    if send["status"] == "sent":
+        return "Deletion sent" if send["kind"] == "delete" else "Sent"
+    if send["status"] == "sending":
+        return "Sending"
+    if send["status"] == "pending":
+        return "Retrying" if send["error"] else ("Deletion waiting" if send["kind"] == "delete" else "Waiting")
+    return ""
+
+
+def bucket_line(ctx: Ctx, send: dict | None, unit: str, key: str) -> None:
+    """One line on an import's or a tag's page: where it stands with the main app's bucket (records.bucket).
+
+    ``unit``: what the file's rows are ("records", "numbers"). A send waiting after a failure says why, when it is
+    tried next, and offers *Try again now*.
+    """
+    sender = ctx.sender
+    if sender is None:
+        return
+    if not sender.configured:
+        st.caption("Main app: not sent — sending to its bucket is off (no BUCKET_* settings; see the README)."
+                   + (" It will go once they are set." if send and send["status"] == "pending" else ""))
+        return
+    if send is None:
+        st.caption("Main app: not sent yet.")
+        return
+    if send["status"] == "sent":
+        what = "its deletion was sent" if send["kind"] == "delete" else "sent"
+        st.caption(f"Main app: {what} {_when(send['sent_at'], ctx.tz)} · {send['rows']:,} "
+                   f"{unit if send['rows'] != 1 else unit[:-1]} · `{send['object_key']}`")
+    elif send["status"] == "sending":
+        st.caption("Main app: sending…")
+    elif send["error"]:
+        c1, c2 = st.columns([5, 1], vertical_alignment="center")
+        c1.warning(f"Main app: not sent yet ({send['attempts']} tr{'ies' if send['attempts'] != 1 else 'y'}). "
+                   f"{send['error']} Next try {_when(send['next_try_at'], ctx.tz)}.")
+        if c2.button("Try again now", key=f"bucket_retry_{key}", width="stretch"):
+            BK.retry_now(ctx.db, [send["id"]])
+            sender.wake()
+            st.toast("Trying again…")
+    else:
+        st.caption("Main app: " + ("its deletion is waiting to be sent." if send["kind"] == "delete"
+                                   else "waiting to be sent."))
 
 
 def go_find(ctx: Ctx, node: dict, note: str) -> None:
@@ -635,8 +685,7 @@ def _tag_detail(ctx: Ctx, tag_id: int) -> None:
         name = prepared["name"]
         c1.download_button(f"⬇ Export ({prepared['counts']['numbers']:,} numbers)", prepared["data"], name,
                            type="primary", width="stretch",
-                           on_click=lambda: ctx.records.log_export(tag_id, ctx.user["username"],
-                                                                   prepared["counts"]["numbers"], name))
+                           on_click=lambda: _exported(ctx, tag_id, prepared["counts"]["numbers"], name))
     elif c1.button("Prepare export", type="primary", width="stretch", disabled=not t["numbers"]):
         with st.spinner("Building the export…"):
             data, counts = export_file(ctx.db, tag_id, ctx.schema, ctx.export)
@@ -650,6 +699,21 @@ def _tag_detail(ctx: Ctx, tag_id: int) -> None:
         c3.caption(f"{ctx.export.label} · {cn['numbers']:,} numbers from {cn['records']:,} records · "
                    f"{cn['no_phone']:,} without a number left out · {cn['shared']:,} numbers in several records "
                    f"(merged: latest dates; consent left blank)")
+
+    sends = BK.tag_sends(ctx.db, tag_id)
+    b1, b2 = st.columns([5, 1.4], vertical_alignment="center")
+    with b1:
+        bucket_line(ctx, sends["latest"], "numbers", f"tag_{tag_id}")
+    pending = bool(sends["latest"] and sends["latest"]["status"] == "pending")
+    if ctx.sender is not None and b2.button("Send to the main app", width="stretch", key=f"tag_send_{tag_id}",
+                                            disabled=pending, help="Sends all of this tag's numbers to the main "
+                                            "app's bucket now (each export does too)."):
+        try:
+            ctx.records.queue_tag_send(tag_id, ctx.user["username"])
+            ctx.sender.wake()
+            st.rerun()
+        except StoreError as exc:
+            st.error(str(exc))
 
     tabs = st.tabs(["Export preview", "Records", "Edit", "History"])
     with tabs[0]:
@@ -674,7 +738,9 @@ def _tag_detail(ctx: Ctx, tag_id: int) -> None:
                     st.error(str(exc))
         sure = st.checkbox("Yes, delete this tag (its records stay)", key=f"del_tag_ok_{tag_id}")
         if st.button("Delete tag", disabled=not sure):
-            ctx.records.delete_tag(tag_id)
+            ctx.records.delete_tag(tag_id, ctx.user["username"])
+            if ctx.sender is not None:
+                ctx.sender.wake()
             del st.query_params["tag"]
             st.rerun()
     with tabs[3]:
@@ -682,6 +748,17 @@ def _tag_detail(ctx: Ctx, tag_id: int) -> None:
         st.dataframe(pd.DataFrame([{"When": _when(e["at"], ctx.tz), "Who": e["username"], "What": e["action"],
                                     "Records / numbers": e["count"] or "", "Details": e["detail"]} for e in ev]),
                      hide_index=True, width="stretch")
+
+
+def _exported(ctx: Ctx, tag_id: int, numbers: int, name: str) -> None:
+    """A tag's export was downloaded: note it, and send the same numbers to the main app's bucket."""
+    ctx.records.log_export(tag_id, ctx.user["username"], numbers, name)
+    try:
+        ctx.records.queue_tag_send(tag_id, ctx.user["username"])
+    except StoreError:
+        return  # a merchant that isn't the main app's (typed in before 1.6.0): exported only
+    if ctx.sender is not None:
+        ctx.sender.wake()
 
 
 def _tag_records(ctx: Ctx, t: dict) -> None:
@@ -767,6 +844,7 @@ def page_businesses(ctx: Ctx) -> None:
                 st.rerun()
             except ValueError as exc:
                 st.error(str(exc))
+    _sending_section(ctx)
     businesses = ctx.records.list_businesses()
     if not businesses:
         st.info("No merchants yet: load them as described above.")
@@ -839,3 +917,55 @@ def page_services(ctx: Ctx) -> None:
                 st.rerun()
             except StoreError as exc:
                 st.error(str(exc))
+
+
+def _send_what(send: dict, imports: dict[int, dict]) -> str:
+    """What a send is, as the pages name it: "Import #12 · guests.csv", "Deletion of import #12…", "Tag 'Promo'"."""
+    if send["kind"] == "tag":
+        return f"Tag '{send['tag_name']}'"
+    imp = imports.get(send["import_id"], {})
+    name = f"import #{imp.get('job_id') or send['import_id']}" + (f" · {imp['file_name']}" if imp.get("file_name")
+                                                                  else "")
+    return ("Deletion of " + name) if send["kind"] == "delete" else name[0].upper() + name[1:]
+
+
+def _sending_section(ctx: Ctx) -> None:
+    """Merchants page: sending to the main app's bucket (records.bucket): where, what waits, the latest sends."""
+    sender = ctx.sender
+    if sender is None:
+        return
+    s = BK.summary(ctx.db)
+    with st.expander("Sending to the main app", expanded=bool(s["retrying"])):
+        if not sender.configured:
+            st.markdown("**Off.** Completed imports, deleted imports and tags go to the main app through its bucket "
+                        "once BUCKET_ENDPOINT, BUCKET_NAME, BUCKET_ACCESS_KEY_ID and BUCKET_SECRET_ACCESS_KEY are set "
+                        "in `.env` (README). Until then nothing is sent"
+                        + (f"; {s['waiting']:,} file(s) are waiting." if s["waiting"] else "."))
+            return
+        st.caption(f"To the bucket `{sender.client.bucket}` at {sender.client.endpoint}, under "
+                   f"`{sender.prefix}{BK.IMPORTS_FOLDER}/` (imports and their deletions) and "
+                   f"`{sender.prefix}{BK.TAGS_FOLDER}/` (tags). Every completed import is sent; a tag when it is "
+                   "exported or sent from its page.")
+        m = st.columns(3)
+        m[0].metric("Waiting", f"{s['waiting']:,}")
+        m[1].metric("Not sent after a failure", f"{s['retrying']:,}")
+        m[2].metric("Sent", f"{s['sent']:,}")
+        if s["retrying"]:
+            st.warning(f"The last failure: {s['error']} Each is tried again after 1, 2, 4… minutes (at most an hour "
+                       "apart).")
+            if st.button("Try them all again now", key="bucket_retry_all"):
+                BK.retry_now(ctx.db)
+                sender.wake()
+                st.toast("Trying again…")
+        if s["recent"]:
+            ids = sorted({r["import_id"] for r in s["recent"] if r["import_id"]})
+            imports = {r["id"]: r for r in ctx.db.fetch("SELECT id, job_id, file_name FROM imports WHERE id = ANY(%s)",
+                                                        (ids,))} if ids else {}
+            labels = {"pending": "waiting", "sending": "sending", "sent": "sent", "cancelled": "not needed"}
+            st.dataframe(pd.DataFrame([{
+                "Queued": _when(r["created_at"], ctx.tz), "What": _send_what(r, imports),
+                "Status": "waiting (failed)" if r["status"] == "pending" and r["error"] else labels[r["status"]],
+                "Sent": _when(r["sent_at"], ctx.tz) if r["sent_at"] else "",
+                "Rows": r["rows"] if r["sent_at"] else None,
+                "File / reason": r["object_key"] or r["error"]} for r in s["recent"]]),
+                hide_index=True, width="stretch")
