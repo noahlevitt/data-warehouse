@@ -1,7 +1,7 @@
 # User guide
 
 How to load merchants and set up services, import customer files, find records, put them into tags and export a tag
-for the main system. No technical knowledge needed. The rules for reading files (phone numbers, dates, birthdays,
+for the main system, and how they reach the main app. No technical knowledge needed. The rules for reading files (phone numbers, dates, birthdays,
 column matching) are the file converter's, described in [converter/USER_GUIDE.md](converter/USER_GUIDE.md).
 
 ## Opening it
@@ -46,7 +46,7 @@ Good to know:
   second time.
 - **A mistake in the mapping?** Open the import, *Delete this import's records* (tick the box first), then *Re-run
   this import*, or upload the file again. Deleting also takes the records out of any tag they were in, and the
-  tag's history says so.
+  tag's history says so. If the import had already been sent to the main app, its deletion is sent too (section 6).
 
 ## 3 · Find records
 
@@ -161,9 +161,30 @@ many of other merchants were left out. **Constrain** with one merchant to keep a
 - **Edit**: rename, notes, delete the tag (the records stay).
 - **History**: who created it, added or removed records (and how many), exported it.
 
+Exporting a tag also sends its numbers to the main app (section 6); so does **Send to the main app** on the tag's
+page, without downloading anything.
+
 What the export contains when a number is in several records: the latest date of each activity, the birthday or
 anniversary with a real year, and **consent left blank** (the main system handles opt-outs per merchant; blank
 changes nobody's consent). Records without a usable number aren't in it.
+
+## 6 · Sending to the main app
+
+Once the app has the main app's bucket set up (by whoever runs it, in `.env`), it sends there by itself:
+
+- every **import** once it has completed (all its records, with their merchant, location and service);
+- the **deletion** of an import's records, when they are deleted after the import was sent;
+- a **tag**, each time it is exported or sent with *Send to the main app* (all of its numbers, as they are then);
+  and once more if it is deleted.
+
+Each import's page and each tag's page has a **Main app** line: when it was sent and as which file, *waiting to be
+sent*, or *not sent yet* with the reason and the time of the next try (it keeps trying by itself; **Try again now**
+doesn't wait). The **Imports** list has a *Main app* column. **Merchants** → *Sending to the main app* lists the
+latest files and what is waiting, and the menu shows a warning while something can't be sent. Without the bucket set
+up, the lines say sending is off; nothing is lost: what waits is sent once it is set up.
+
+The main app decides what to do with the files: segments built from tags check opt-outs, the Do Not Call list and
+mobile numbers there.
 
 ## Common questions
 
