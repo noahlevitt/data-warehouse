@@ -4,7 +4,11 @@ What changed in each version of Customer Records. The running version is shown i
 is tagged in git (`vX.Y.Z`). The history of the file converter this project is based on is in
 [converter/CHANGELOG.md](converter/CHANGELOG.md).
 
-## 1.7.0 — sending to the main app through its bucket
+## 1.7.0-sendsational — sending to the main app through its bucket (branch `sendsational`)
+
+On the `sendsational` branch only, tagged `sendsational-1.7.0` (Noah, 2026-10-17: it needs the main app's side, which
+doesn't exist yet, so `main` stays the standalone app). Built on 1.6.1.
+
 
 - **Customer Records sends its data to the main app**, as CSV files in the main app's bucket (Cloudflare R2), for
   its ClickHouse: every completed import (one row per record, with the merchant, location, service, every field,
