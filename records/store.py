@@ -24,6 +24,7 @@ Rules enforced here
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import psycopg
@@ -39,6 +40,30 @@ class StoreError(ValueError):
 def _clean(text: str | None) -> str:
     """Trimmed text, '' for None."""
     return (text or "").strip()
+
+
+def queue_import_deletion(c: psycopg.Connection, import_id: int, username: str = "") -> None:
+    """Before an import's records are deleted (on connection ``c``, in the same transaction): queue the deletion
+    file for the main app's bucket when the import's file was sent or may have been (a try was made: it can have
+    landed even if it failed or was cut off); a send never tried is dropped instead. The sender holds the deletion
+    until the import's own send is settled (records.bucket)."""
+    imp = c.execute("""SELECT status, attempts FROM bucket_sends WHERE kind = 'import' AND import_id = %s""",
+                    (import_id,)).fetchone()
+    if imp is None:
+        return
+    if imp["status"] == "pending" and imp["attempts"] == 0:
+        c.execute("""UPDATE bucket_sends SET status = 'cancelled' WHERE kind = 'import' AND import_id = %s""",
+                  (import_id,))
+        return
+    if imp["status"] == "pending":
+        # Waiting after a failed try: make it due now, so it is cancelled (records gone) and the deletion can go.
+        c.execute("""UPDATE bucket_sends SET next_try_at = now() WHERE kind = 'import' AND import_id = %s""",
+                  (import_id,))
+    rows = [r["file_row"] for r in c.execute("SELECT file_row FROM records WHERE import_id = %s",
+                                             (import_id,)).fetchall()]
+    c.execute("""INSERT INTO bucket_sends (kind, import_id, file_rows, business_id, created_by)
+                 SELECT 'delete', id, %s, business_id, %s FROM imports WHERE id = %s
+                 ON CONFLICT DO NOTHING""", (rows, username, import_id))
 
 
 class RecordStore:
@@ -271,13 +296,16 @@ class RecordStore:
     def delete_import(self, import_id: int, username: str = "") -> dict:
         """Delete an import's records (and with them their place in tags). The import stays, marked 'deleted'.
 
-        Returns {"records": n, "tags": {tag name: records removed}}. Each tag that lost records gets an event.
+        Returns {"records": n, "tags": {tag name: records removed}}. Each tag that lost records gets an event. An
+        import already sent to the main app's bucket gets its deletion queued (records.bucket); one waiting to be
+        sent isn't sent.
         """
         with self.db.conn() as c:
             job = (c.execute("SELECT job_id FROM imports WHERE id = %s", (import_id,)).fetchone() or {}).get("job_id")
             hit = c.execute("""SELECT t.id, t.name, count(*) AS n FROM tag_records tr
                                JOIN records r ON r.id = tr.record_id JOIN tags t ON t.id = tr.tag_id
                                WHERE r.import_id = %s GROUP BY t.id, t.name""", (import_id,)).fetchall()
+            queue_import_deletion(c, import_id, username)
             n = c.execute("DELETE FROM records WHERE import_id = %s", (import_id,)).rowcount
             c.execute("UPDATE imports SET status = 'deleted' WHERE id = %s", (import_id,))
             for t in hit:
@@ -377,9 +405,45 @@ class RecordStore:
         except psycopg.errors.UniqueViolation:
             raise StoreError(f"This merchant already has a tag named '{nm}'.") from None
 
-    def delete_tag(self, tag_id: int) -> None:
-        """Delete a tag (its records stay; only the list goes)."""
-        self.db.execute("DELETE FROM tags WHERE id = %s", (tag_id,))
+    def delete_tag(self, tag_id: int, username: str = "") -> None:
+        """Delete a tag (its records stay; only the list goes).
+
+        A tag already sent to the main app's bucket gets a last snapshot queued that says it was deleted
+        (records.bucket); one never sent has its waiting snapshot dropped.
+        """
+        with self.db.conn() as c:
+            t = c.execute("SELECT id, uid, name, business_id FROM tags WHERE id = %s", (tag_id,)).fetchone()
+            if t is None:
+                return
+            sent = c.execute("""SELECT 1 FROM bucket_sends WHERE kind = 'tag' AND tag_id = %s
+                                 AND status IN ('sent', 'sending') LIMIT 1""", (tag_id,)).fetchone()
+            if not sent:
+                c.execute("""UPDATE bucket_sends SET status = 'cancelled' WHERE kind = 'tag' AND tag_id = %s
+                             AND status = 'pending'""", (tag_id,))
+            elif c.execute("""UPDATE bucket_sends SET tag_name = %s WHERE kind = 'tag' AND tag_id = %s
+                              AND status = 'pending'""", (t["name"], tag_id)).rowcount == 0:  # its name now
+                c.execute("""INSERT INTO bucket_sends (kind, tag_id, tag_uid, tag_name, business_id, created_by)
+                             VALUES ('tag', %s, %s, %s, %s, %s)""",
+                          (tag_id, t["uid"], t["name"], t["business_id"], username))
+            c.execute("DELETE FROM tags WHERE id = %s", (tag_id,))
+
+    def queue_tag_send(self, tag_id: int, username: str = "") -> bool:
+        """Queue a snapshot of the tag for the main app's bucket (records.bucket). Returns False when one is
+        already waiting (it is built when sent, so it will hold this tag as it is then)."""
+        with self.db.conn() as c:
+            t = c.execute("SELECT id, uid, name, business_id FROM tags WHERE id = %s", (tag_id,)).fetchone()
+            if t is None:
+                raise StoreError("This tag no longer exists.")
+            if not re.fullmatch(r"[0-9]+", t["business_id"]):  # ASCII digits, as the main app's file names
+                raise StoreError(f"Merchant {t['business_id']} isn't a merchant of the main app, so its tags can't "
+                                 "be sent there.")
+            if c.execute("""SELECT 1 FROM bucket_sends WHERE kind = 'tag' AND tag_id = %s AND status = 'pending'
+                         """, (tag_id,)).fetchone():
+                return False
+            c.execute("""INSERT INTO bucket_sends (kind, tag_id, tag_uid, tag_name, business_id, created_by)
+                         VALUES ('tag', %s, %s, %s, %s, %s)""",
+                      (tag_id, t["uid"], t["name"], t["business_id"], username))
+        return True
 
     def tag_events(self, tag_id: int) -> list[dict]:
         """What was done to a tag, newest first."""
