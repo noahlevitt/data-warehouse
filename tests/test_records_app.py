@@ -23,6 +23,7 @@ from records.store import RecordStore
 
 from .conftest import ROOT, drop_database, fresh_database
 from .records_util import import_file
+from .test_records_bucket import FakeS3, s3  # noqa: F401 - the stand-in bucket and its fixture
 
 CSV = b"First Name,Last Name,Phone,Last Visit\nJohn,Smith,5165550100,10/01/2026\nAnn,Lee,9175551234,10/02/2026\n"
 
@@ -462,3 +463,69 @@ def test_a_location_that_leaves_the_main_app_is_never_swapped_for_another(env):
         assert not any("no longer in the main app" in w.value for w in at.warning)
     finally:
         rs.load_merchants(MERCHANTS, LOCATIONS, "test")
+
+
+def test_sending_to_the_main_app_is_off_without_settings(env):
+    """No BUCKET_* settings: the pages say sending is off; nothing is tried."""
+    jobs, rs = env
+    job = jobs.list_imports(limit=1, statuses=["completed"])[0]
+    at = run_page("Imports", query={"id": str(job.id)})
+    assert any("sending to its bucket is off" in c.value for c in at.caption)
+    at = run_page("Merchants")
+    assert any("**Off.**" in m.value and "BUCKET_ENDPOINT" in m.value for m in at.markdown)
+    assert rs.db.fetch("SELECT * FROM bucket_sends WHERE status = 'sent'") == []
+
+
+def test_imports_and_tags_go_to_the_main_apps_bucket(env, s3, monkeypatch):
+    """With the bucket set up (a stand-in S3 server here): the background sender sends the completed imports, a
+    tag on Send to the main app; the pages say what went where; a refusal is shown with Try again now, also in the
+    sidebar. Last in this file: it leaves sends in the database."""
+    from records import bucket as B
+
+    jobs, rs = env
+    for k, v in dict(BUCKET_ENDPOINT=s3, BUCKET_NAME="master-bucket", BUCKET_ACCESS_KEY_ID="AKID",
+                     BUCKET_SECRET_ACCESS_KEY="s3cr3t").items():
+        monkeypatch.setenv(k, v)
+    st.cache_resource.clear()                                       # the app's sender is made again, set up
+    try:
+        job = jobs.list_imports(limit=1, statuses=["completed"])[0]
+        at = run_page("Imports")                                    # starts the sender
+        end = time.monotonic() + 30
+        while not any("/customer-records/" in k for k in FakeS3.objects) and time.monotonic() < end:
+            time.sleep(0.1)
+        keys = [k for k in FakeS3.objects if "/customer-records/" in k]
+        assert keys and all(k.startswith("/master-bucket/data/customer-records/") for k in keys)
+        at = run_page("Imports")
+        [table] = [d.value for d in at.dataframe if "Main app" in d.value.columns]
+        assert set(table["Main app"]) == {"Sent"}
+        at = run_page("Imports", query={"id": str(job.id)})
+        assert any(c.value.startswith("Main app: sent") and "records" in c.value
+                   and "data/customer-records/" in c.value for c in at.caption)
+
+        tag = next(t for t in rs.list_tags() if t["name"] == "Smiths")
+        at = run_page("Tags", query={"tag": str(tag["id"])})
+        assert any(c.value == "Main app: not sent yet." for c in at.caption)
+        button(at, "Send to the main app").click().run()
+        while not any("/customer-records-tags/" in k for k in FakeS3.objects) and time.monotonic() < end:
+            time.sleep(0.1)
+        at = run_page("Tags", query={"tag": str(tag["id"])})
+        assert any(c.value.startswith("Main app: sent") and "· 1 number ·" in c.value for c in at.caption)
+
+        FakeS3.status = 403                                         # the key no longer works
+        rs.queue_tag_send(tag["id"])
+        while not rs.db.fetch_one("SELECT 1 FROM bucket_sends WHERE error <> ''") and time.monotonic() < end:
+            time.sleep(0.1)
+        at = run_page("Tags", query={"tag": str(tag["id"])})
+        assert any("not sent yet (1 try)" in w.value and "HTTP 403, AccessDenied" in w.value for w in at.warning)
+        assert any("not sent to the main app yet" in c.value for c in at.sidebar.caption)
+        FakeS3.status = 200
+        button(at, "Try again now").click().run()
+        while rs.db.fetch_one("SELECT 1 FROM bucket_sends WHERE status = 'pending'") and time.monotonic() < end:
+            time.sleep(0.1)
+        at = run_page("Merchants")
+        assert [m.value for m in at.metric][:3] == ["0", "0", str(len(FakeS3.objects))]
+        assert not any("s3cr3t" in str(e.value) for e in list(at.caption) + list(at.markdown) + list(at.warning))
+    finally:
+        B.stop_all()
+        st.cache_resource.clear()
+        rs.db.execute("DELETE FROM bucket_sends")
