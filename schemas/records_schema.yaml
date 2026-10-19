@@ -8,7 +8,7 @@
 #
 # The same engine as the file converter reads these fields, so every rule documented in README.md applies: US
 # phone numbers only, the approved phone repairs (marked), dates in any format, 1600 for birthdays without a year,
-# consent and last_contacted only when a person maps them.
+# consent and last_contacted only when a person maps them, each consent column read with its consent setting.
 #
 # Differences from the converter's import format (schemas/target_schema.yaml):
 #   - phone_number is not required: a row without a usable number is still a record (searchable by name, email…),
@@ -217,12 +217,18 @@ fields:
     description: Anniversary; month and day only is fine (year 1600 = no year)
     synonyms: [anniversary date, wedding anniversary, anniv, wedding date]
 
-  # Mapped by hand only, as in the converter. Kept on the record as the file says; tag exports leave consent blank
-  # for now (the main system handles opt-outs per business).
+  # Mapped by hand only, as in the converter. Whoever maps a column to it chooses what that column records, its
+  # consent setting (file-converter 0.23.0): "Opt-ins only" (a no is left blank: e.g. an email opt-in column, whose
+  # "No" is not a text opt-out), "Opt-ins and opt-outs" (a no is written as false) or "Opt-outs only" (e.g.
+  # Unsubscribed: a yes is written as false, a no left blank). Several columns are read together; an opt-out in any
+  # of them wins. Kept on the record; tag exports leave consent blank for now (the main system handles opt-outs per
+  # business).
   - name: consent
     header: Consent
     type: boolean
     true_value: "true"
     false_value: "false"
     manual_only: true
-    description: Consent as the file records it (true = opted in, false = opted out). Only mapped by hand.
+    opt_out_choice: true
+    description: Consent (true = opted in, false = opted out), after each column's consent setting. Only mapped by
+      hand.
