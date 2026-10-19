@@ -1,4 +1,4 @@
-"""Customer Records — internal web app (the Streamlit entry point). Built on the file converter (0.21.2).
+"""Customer Records — internal web app (the Streamlit entry point). Built on the file converter (0.23.0).
 
 Pages: New import · Imports (tracker, progress, results, side-by-side comparison) · Find · Tags · Merchants ·
 Services · Templates · Fields · Users (admins only, when logins are on)
@@ -85,10 +85,11 @@ from converter.compare import (FILTERS, build_compare_html, column_plan, compari
                                filter_rows, status_counts)
 from converter.config import get_settings
 from converter.checks import column_warnings
-from converter.editor import (FROM_LABEL, LABELS, OPTION_HELP, apply_column_edit, apply_row_edit, option_text,
-                              row_problem)
+from converter.editor import (FROM_LABEL, LABELS, OPTION_HELP, apply_column_edit, apply_row_edit, goes_to_cell,
+                              goes_to_options, option_text, read_goes_to, row_problem)
 from converter.engine import convert, count_multi_number_cells, preview_values, source_rows
-from converter.mapping import Mapping, area_code_pairs, has_generic_columns, profile_columns
+from converter.mapping import (CONSENT_MODES, Mapping, area_code_pairs, consent_missing, consent_modes,
+                               has_generic_columns, profile_columns)
 from converter.numberlog import lookup as number_lookup
 from converter.normalizers import sheet_error
 from converter.output import neutralise_csv
@@ -654,6 +655,43 @@ def on_map_edit(key: str) -> None:
     ss.editor_version += 1
 
 
+# The consent settings (0.23.0; mapping.CONSENT_MODES), as the reviewer reads them under the field grid.
+CONSENT_LABELS = {
+    "in": "Opt-ins only — yes subscribes; no is left blank and unsubscribes nobody (e.g. Email Opt In: not opting "
+          "into email isn't opting out of texts)",
+    "both": "Opt-ins and opt-outs — yes subscribes; no opts the customer out of texts (a column of text opt-ins and "
+            "opt-outs)",
+    "out": "Opt-outs only — yes opts the customer out; no is left blank (e.g. Unsubscribed, Opt Out, Do Not Text)",
+}
+def translation_note(fm) -> str:
+    """For a consent column read with Translate values: " — translated: Yes=false; No=true", shown with its
+    setting question (a translated value keeps its meaning: true is an opt-in, false an opt-out); "" otherwise."""
+    if fm.transform != "map_values" or not fm.params.get("value_map"):
+        return ""
+    return " — translated: " + "; ".join(f"{m.get('from', '')}={m.get('to', '')}" for m in fm.params["value_map"])
+
+
+def on_consent_setting(field_name: str, column: str, key: str) -> None:
+    """on_change callback of a consent column's setting under the field grid: store it in the field's params
+    ({"modes": {column: "in" | "both" | "out"}}). Until every consent column has one, Mapping.problems blocks
+    Start import. The widget key includes the current setting, so afterwards the radio is rebuilt from the mapping.
+    """
+    choice = ss.get(key)
+    mapping: Mapping = ss.mapping
+    fm = mapping.get(field_name).model_copy(deep=True)
+    modes = consent_modes(fm)
+    if choice in CONSENT_MODES:
+        modes[column] = choice
+    else:
+        modes.pop(column, None)
+    fm.params["modes"] = modes
+    if fm.transform == "coalesce":
+        fm.transform = "consent"  # a person's edit of a First non-empty kept from 0.22.0: read together from now on
+    fm.origin, fm.confidence, fm.reason = "user", "", "set by reviewer"
+    ss.mapping = mapping.model_copy(update={"fields": {**mapping.fields, field_name: fm}})
+    ss.editor_version += 1  # "Goes to" and the grid's Option cell show the setting too
+
+
 def mapping_diff(sch: TargetSchema, before: Mapping, changes: Mapping) -> pd.DataFrame:
     """Return a table of the fields whose mapping really changes between `before` and `changes`.
 
@@ -722,7 +760,7 @@ def start_import() -> int:
 
 
 def rerun_import(rec: ImportRecord, overrides: dict | None = None, ai_used: bool | None = None,
-                 mapping: Mapping | None = None) -> int:
+                 mapping: Mapping | None = None, consent: dict[str, dict[str, str]] | None = None) -> int:
     """Start a new import from a previous one's original file and mapping, with the current target format.
 
     Used by "Re-run this import", "Re-run the import with these changes" (Claude's mistake check) and "Apply
@@ -736,6 +774,9 @@ def rerun_import(rec: ImportRecord, overrides: dict | None = None, ai_used: bool
       import's fixes, so fixes approved earlier are kept.
     - ai_used: whether Claude was involved; None keeps the old import's flag.
     - mapping: a replacement mapping (e.g. with Claude's suggested changes); None reuses the old one.
+    - consent: {field name: {column: "in" / "both" / "out"}}, consent settings for the columns of a consent
+      mapping made before 0.22.0, which have none (asked on the import's page, see _rerun_consent). A re-run never
+      starts while a consent column has no setting: ValueError.
 
     The *current* schema is used rather than the old import's snapshot, so a re-run picks up changes to the target
     format. The read options (sheet, header row, client time zone) are reused as they were. Writes a new import
@@ -746,6 +787,19 @@ def rerun_import(rec: ImportRecord, overrides: dict | None = None, ai_used: bool
     Callers only offer a re-run when the import has no records stored (it didn't complete, or its records were
     deleted; see can_rerun), so a re-run never stores the same rows twice.
     """
+    final = (mapping or rec.mapping).model_copy(deep=True)
+    for name, chosen in (consent or {}).items():
+        if name in final.fields:
+            fm = final.fields[name]
+            # Only columns without a setting take the one chosen here; settings made when mapping stay.
+            fm.params["modes"] = {**{c: m for c, m in chosen.items() if m in CONSENT_MODES}, **consent_modes(fm)}
+            if fm.transform in ("copy", "coalesce"):
+                # Mapped before 0.22.0, with settings chosen now: the columns are read together like any consent
+                # mapping today (First non-empty would let an earlier column hide an opt-out column's opt-out).
+                fm.transform = "consent"
+    missing = [c for f in schema.mappable_fields for c in consent_missing(f, final.get(f.name))]
+    if missing:
+        raise ValueError(f"choose what {', '.join(missing)} records before re-running")
     data = store.source_path(rec).read_bytes()
     # Shallow copy: the per-field dicts inside rec.overrides are updated in place. That's harmless here because
     # `rec` is a fresh object read from the database on every run, not something cached.
@@ -757,7 +811,7 @@ def rerun_import(rec: ImportRecord, overrides: dict | None = None, ai_used: bool
                                    rec.read_options.get("sheet"), user["username"], location_id=old["location_id"])
     new_id = store.create_import(
         username=user["username"], filename=rec.filename, data=data, schema_label=schema.label,
-        schema_json=schema.model_dump_json(), mapping=mapping or rec.mapping,
+        schema_json=schema.model_dump_json(), mapping=final,
         read_options=dict(rec.read_options, records_import_id=rec_id),
         overrides=merged, template_name=rec.template_name,
         ai_used=rec.ai_used if ai_used is None else ai_used, parent_id=rec.id)
@@ -993,6 +1047,31 @@ def page_new_import() -> None:
     )
     for e in ss.get("edit_errors") or []:
         st.error(e)
+    # Consent (a field with opt_out_choice): each column it reads has its own consent setting, chosen here or with
+    # the column under Columns in your file. Nothing is assumed: Start import stays disabled (Mapping.problems)
+    # until every consent column has one.
+    for f in schema.mappable_fields:
+        fm = mapping.get(f.name)
+        if not f.opt_out_choice or fm.transform in ("none", "constant") or not fm.sources:
+            continue
+        modes = consent_modes(fm)
+        with st.container(border=True):
+            st.markdown(f"**{f.header}: what does each column record?**")
+            for col in fm.sources:
+                mode = modes.get(col)
+                ckey = f"consent_{f.name}_{col}_{mode}_{ss.editor_version}"
+                st.radio(f"`{col}`" + translation_note(fm), list(CONSENT_MODES),
+                         index=None if mode is None else list(CONSENT_MODES).index(mode),
+                         format_func=CONSENT_LABELS.get, key=ckey, on_change=on_consent_setting,
+                         args=(f.name, col, ckey),
+                         help="Required before importing. true subscribes the customer, false opts them out of "
+                              "texts, and a blank changes nothing.")
+            if fm.transform == "coalesce":
+                st.caption("First non-empty: on each row, the first of these columns with a value decides (as "
+                           "mapped before 0.23.0). Pick How 'Consent columns' to read them together instead.")
+            elif len(fm.sources) > 1:
+                st.caption("Each row takes the columns together: an opt-out in any of them wins (false), otherwise "
+                           "an opt-in (true), otherwise blank.")
     # Several phone columns feeding the phone field, or cells holding several numbers, mean "one row per different
     # number"; say so, because the converted file will then have more rows than the original.
     each = mapping.row_field(schema)
@@ -1134,8 +1213,9 @@ def on_columns_edit(key: str, columns: list[str]) -> None:
       and the import and are what "Apply notes with Claude" works from.
     - Goes to / Skip: passed to converter.editor.apply_column_edit, which moves the column to the chosen field(s)
       (a field that gains the column takes it as its only source, except the phone field, which adds it) or
-      excludes it so rules, templates and Claude won't map it again. "Goes to" holds output headers, so they are
-      turned back into field names first; locked (always blank) fields aren't among the choices.
+      excludes it so rules, templates and Claude won't map it again. "Goes to" holds output headers (consent with
+      the column's consent setting, "consent — opt-outs only"), so they are turned back into field names and
+      settings first (read_goes_to); locked (always blank) fields aren't among the choices.
 
     Writes ss.mapping and ss.column_messages (what changed, shown once under the table), then bumps
     ss.notes_version and ss.editor_version so both data editors are rebuilt from the new mapping: a change here
@@ -1143,7 +1223,6 @@ def on_columns_edit(key: str, columns: list[str]) -> None:
     """
     state = ss.get(key, {})
     mapping: Mapping = ss.mapping
-    by_header = {f.header: f.name for f in schema.mappable_fields}
     notes = dict(mapping.column_notes)
     messages: list[str] = []
     for idx, changes in state.get("edited_rows", {}).items():
@@ -1156,12 +1235,12 @@ def on_columns_edit(key: str, columns: list[str]) -> None:
                 notes.pop(col, None)
         # None means "this cell wasn't touched", which apply_column_edit treats differently from an empty list
         # (an empty Goes to = leave the column out) or False (un-skip).
-        targets = None
+        targets, settings = None, None
         if COL_GOES in changes:
-            targets = [by_header[h] for h in (changes[COL_GOES] or []) if h in by_header]
+            targets, settings = read_goes_to(schema, changes[COL_GOES] or [])
         skip = changes.get(COL_SKIP)
         if targets is not None or skip is not None:
-            mapping, msgs = apply_column_edit(schema, mapping, col, targets=targets, skip=skip)
+            mapping, msgs = apply_column_edit(schema, mapping, col, targets=targets, skip=skip, settings=settings)
             messages.extend(msgs)
     # Notes are applied last, on top of whatever apply_column_edit returned (it doesn't touch notes).
     ss.mapping = mapping.model_copy(update={"column_notes": notes})
@@ -1262,7 +1341,9 @@ def _notes_and_checks(df: pd.DataFrame) -> None:
                    "**Skip** to keep a column out of the import completely — rules, saved templates and Claude "
                    "won't map it again. Picking a field here replaces whatever fed that field before — except "
                    "the phone field: each phone column you add is kept too (every different number stays on the "
-                   "record). Every column is also kept on the record as written. "
+                   "record) — and consent: pick it with what the column records (opt-ins only, opt-ins and "
+                   "opt-outs, or opt-outs only); several consent columns are read together. Every column is also "
+                   "kept on the record as written. "
                    "You can also write a note on what a column is, where it goes or how to read it — e.g. "
                    "*“this is the last visit date”*, *“dates are day-first”*. "
                    + ("Claude applies the notes when you click *Apply notes*. " if assistant else
@@ -1276,7 +1357,7 @@ def _notes_and_checks(df: pd.DataFrame) -> None:
         notes_df = pd.DataFrame([{
             "Column": c,
             "Sample values": " | ".join(samples.get(c, [])[:3]),
-            COL_GOES: [schema.field(n).header for n in mapping.targets_of(c) if n in schema.field_names],
+            COL_GOES: goes_to_cell(schema, mapping, c),
             COL_SKIP: c in excluded,
             COL_CHECK: ("⚠ " + warnings[c][1]) if c in warnings else ("Skipped" if c in excluded else ""),
             COL_NOTE: mapping.column_notes.get(c, ""),
@@ -1293,9 +1374,11 @@ def _notes_and_checks(df: pd.DataFrame) -> None:
                            "Column": st.column_config.TextColumn(pinned=True),
                            "Sample values": st.column_config.TextColumn(width="medium"),
                            COL_GOES: st.column_config.MultiselectColumn(
-                               options=[f.header for f in schema.mappable_fields], width="medium",
+                               options=goes_to_options(schema), width="medium",
                                help="Field(s) this column goes to. Empty = not imported. Picking a field makes this "
-                                    "column its only source."),
+                                    "column its only source (phone and consent columns add up). For consent, pick "
+                                    "what the column records: opt-ins only, opt-ins and opt-outs, or opt-outs "
+                                    "only."),
                            COL_SKIP: st.column_config.CheckboxColumn(
                                help="Leave this column out of the import and stop it from being mapped again."),
                            COL_CHECK: st.column_config.TextColumn(width="medium"),
@@ -1549,6 +1632,7 @@ def page_import_detail(import_id: int) -> None:
             st.error(rec.error)
         else:
             st.warning(f"This import was {rec.status}.")
+        _ask_rerun_consent(rec)
         _rerun_button(rec)
         return
 
@@ -1584,22 +1668,58 @@ def _live_progress(import_id: int) -> None:
         st.caption("Cancelling…")
 
 
+def _rerun_missing(rec: ImportRecord) -> list[tuple]:
+    """(field, column) for each consent column without a consent setting in this import's mapping (consent mapped
+    before 0.22.0, when nobody was asked what it records). A re-run can't start until they are chosen."""
+    return [(f, c) for f in schema.mappable_fields for c in consent_missing(f, rec.mapping.get(f.name))]
+
+
+def _ask_rerun_consent(rec: ImportRecord) -> None:
+    """Above the re-run actions of an import whose consent columns have no setting: ask for each (once per page).
+
+    Customer Records: only asked when the import can be re-run (can_rerun: e.g. not while its records are stored).
+    """
+    if not can_rerun(rec)[0]:
+        return
+    missing = _rerun_missing(rec)
+    for f, col in missing:
+        st.radio(f"Before re-running: **{f.header}** came from `{col}`{translation_note(rec.mapping.get(f.name))}, "
+                 "mapped before this question was asked. What does that column record?", list(CONSENT_MODES),
+                 index=None, format_func=CONSENT_LABELS.get, key=f"rerun_consent_{rec.id}_{f.name}_{col}")
+    if any(len(rec.mapping.get(f.name).sources) > 1 for f, _ in missing):
+        st.caption("The re-run reads the consent columns together, each with its setting: an opt-out in any of them "
+                   "wins (false), otherwise an opt-in (true), otherwise blank.")
+
+
+def _rerun_consent(rec: ImportRecord) -> dict[str, dict[str, str]] | None:
+    """The consent settings chosen above the re-run actions ({field: {column: setting}}), or None while one is
+    still missing (the re-run buttons are then disabled)."""
+    chosen: dict[str, dict[str, str]] = {}
+    for f, col in _rerun_missing(rec):
+        mode = ss.get(f"rerun_consent_{rec.id}_{f.name}_{col}")
+        if mode not in CONSENT_MODES:
+            return None
+        chosen.setdefault(f.name, {})[col] = mode
+    return chosen
+
+
 def _rerun_button(rec: ImportRecord) -> None:
     """Show "Re-run this import", or a note saying why it can't be re-run.
 
     A re-run needs the stored original file, which is deleted after FILE_RETENTION_DAYS (files_purged) or may be
     missing on disk. Clicking creates a new import with the same file and mapping but the current target format
-    (see rerun_import), and opens it.
+    (see rerun_import), and opens it. Disabled while a consent column has no setting (_ask_rerun_consent).
     """
     ok, why = can_rerun(rec)
     if not ok:
         st.caption(why)
         return
-    if st.button("↻ Re-run this import", help="Runs the same original file and mapping again with the current "
-                                              "record fields, for the same merchant, location and service. "
-                                              "Creates a new "
-                                              "import."):
-        open_import(rerun_import(rec))
+    consent = _rerun_consent(rec)
+    if st.button("↻ Re-run this import", disabled=consent is None,
+                 help="Runs the same original file and mapping again with the current record fields, for the same "
+                      "merchant, location and service. Creates a new import."
+                      + (" First choose above what each consent column records." if consent is None else "")):
+        open_import(rerun_import(rec, consent=consent))
 
 
 def _completed_view(rec: ImportRecord) -> None:
@@ -1644,6 +1764,12 @@ def _completed_view(rec: ImportRecord) -> None:
     if rs.get("first_visit_as"):
         st.caption(f"ℹ️ The file has no last-activity date, so tag exports use its sign-up / creation date as "
                    f"**{rs['first_visit_as']}**, as the converter does.")
+    for header, c in (s.get("consent_counts") or {}).items():
+        # Consent as stored, after each column's consent setting (file-converter 0.23.0; the converter shows it in
+        # its result banner, which this page replaces with the records stored).
+        st.caption(f"ℹ️ {header}: {c.get('true', 0):,} true (opted in), {c.get('false', 0):,} false (opted out)"
+                   + (f", {c['left_blank']:,} left blank by the consent settings (they change nothing)"
+                      if c.get("left_blank") else "") + ".")
 
     m = st.columns(6)
     m[0].metric("Rows in file", f"{rec.total_rows:,}")
@@ -1771,6 +1897,7 @@ def _completed_view(rec: ImportRecord) -> None:
                    f", client time zone {ZONE_LABEL.get(tz, tz or 'Eastern')}")
 
     st.divider()
+    _ask_rerun_consent(rec)
     _import_check_section(rec, rec_schema, src_df, audit)
     a, b = st.columns([1, 3])
     with a:
@@ -1856,14 +1983,15 @@ def _import_check_section(rec: ImportRecord, rec_schema: TargetSchema, src_df: p
             ok, why = can_rerun(rec)
             if not ok:
                 st.caption(why)
-            if st.button("Re-run the import with these changes", type="primary", disabled=not ok,
+            consent = _rerun_consent(rec)
+            if st.button("Re-run the import with these changes", type="primary", disabled=not ok or consent is None,
                          key=f"rerun_{ckey}"):
                 # Same selection as Accept on New import: only fields that really change (matched by output
                 # header, as shown in the diff), merged onto the old mapping so its notes and skipped columns stay.
                 changed = Mapping(fields={k: v for k, v in chk["ai"].mapping.fields.items()
                                           if rec_schema.field(k).header in set(diff["Field"])})
                 new_map = merge(rec.mapping, changed)
-                open_import(rerun_import(rec, ai_used=True, mapping=new_map))
+                open_import(rerun_import(rec, ai_used=True, mapping=new_map, consent=consent))
 
 
 def _side_by_side(rec: ImportRecord, rec_schema: TargetSchema, src_df: pd.DataFrame, audit: pd.DataFrame,
@@ -1920,9 +2048,11 @@ def _repair_section(rec: ImportRecord, rec_schema: TargetSchema, audit: pd.DataF
     accepted fixes as overrides ({field: {original: fixed}}) and opens it; this import is never changed, so
     every fix stays traceable.
     """
-    # Excel error codes (#REF!, #VALUE!…) are left out: they hold no data, so there is nothing to reformat.
+    # Excel error codes (#REF!, #VALUE!…) are left out: they hold no data, so there is nothing to reformat. Yes/no
+    # fields (consent) too: a value that isn't yes or no can't be reformatted into one, only guessed (0.22.0).
     failed = {k: kept for k, v in rec.summary.get("failed_values", {}).items()
-              if k in rec_schema.field_names and (kept := [x for x in v if not sheet_error(x)])}
+              if k in rec_schema.field_names and rec_schema.field(k).type != "boolean"
+              and (kept := [x for x in v if not sheet_error(x)])}
     if not failed or not assistant:
         return
     n_vals = sum(len(v) for v in failed.values())
@@ -1965,10 +2095,11 @@ def _repair_section(rec: ImportRecord, rec_schema: TargetSchema, audit: pd.DataF
             ok, why = can_rerun(rec)
             if n_ok and not ok:
                 st.caption(why)
+            consent = _rerun_consent(rec)
             if n_ok and st.button(f"Apply {n_ok} fix{'es' if n_ok != 1 else ''} and re-run", type="primary",
-                                  key=f"apply_{rec.id}", disabled=not ok):
+                                  key=f"apply_{rec.id}", disabled=not ok or consent is None):
                 new_id = rerun_import(rec, overrides={k: p["accepted"] for k, p in props.items() if p["accepted"]},
-                                      ai_used=True)
+                                      ai_used=True, consent=consent)
                 # Drop the proposals before leaving (open_import ends the run), so coming back to this import
                 # doesn't offer the same fixes again.
                 ss.pop(pkey, None)
