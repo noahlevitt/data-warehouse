@@ -185,7 +185,8 @@ def write_summary(result: ConversionResult, schema: TargetSchema, source_filenam
     * "Optional values left blank" — invalid optional values that were blanked.
 
     When 'One row per phone number' added rows, an indented "of which extra rows …" line is inserted right after
-    "Rows converted" and a count of skipped extra numbers is appended.
+    "Rows converted" and a count of skipped extra numbers is appended. With consent mapped as "opt-ins only", the
+    number of false values left blank is listed too (0.22.0).
     """
     lines = [
         "IMPORT CONVERSION SUMMARY",
@@ -210,6 +211,12 @@ def write_summary(result: ConversionResult, schema: TargetSchema, source_filenam
         lines.append(f"Extra phone numbers skipped:         {result.skipped_values:,}  (invalid, or labelled fax)")
     if result.repaired_values:
         lines.append(f"Phone numbers repaired from typos:   {result.repaired_values:,}  (check these)")
+    for header, c in result.consent_counts.items():
+        # Consent read from columns (0.23.0): what the converted file says, after each column's consent setting.
+        lines.append(f"{(header.capitalize() + ' true / false:'):<37}{c.get('true', 0):,} / {c.get('false', 0):,}"
+                     "  (subscribed / unsubscribed)")
+        if c.get("left_blank"):
+            lines.append(f"{(header.capitalize() + ' left blank by setting:'):<37}{c['left_blank']:,}")
     if result.reason_counts:
         lines += ["", "Why rows were rejected:"]
         lines += [f"  {count:>6,}  {reason}" for reason, count in result.reason_counts.most_common()]
