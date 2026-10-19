@@ -3,8 +3,9 @@
 For whoever picks Customer Records up next: a person, or Claude in a new chat. It records what the code and the
 other documents don't: how changes are made and delivered, the decisions the business made, and what is still open.
 
-**State:** version 1.8.0, a prototype (see [CHANGELOG.md](CHANGELOG.md)), based on file-converter 0.21.2 with its
-0.22.0 and 0.23.0 ported in (section 5). About 1,330 tests. Repository: github.com/noahlevitt/data-warehouse, with its own git history: it started from the
+**State:** version 1.8.0-sendsational on this branch (1.8.0 on `main`), a prototype (see
+[CHANGELOG.md](CHANGELOG.md)), based on file-converter 0.21.2 with its 0.22.0 and 0.23.0 ported in (section 5).
+About 1,350 tests. Repository: github.com/noahlevitt/data-warehouse, with its own git history: it started from the
 converter's files, not from its history (section 5).
 Owner: Noah Levitt. Last updated 2026-10-19. Update this file with every release (section 4 in particular).
 
