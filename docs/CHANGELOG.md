@@ -4,6 +4,35 @@ What changed in each version of Customer Records. The running version is shown i
 is tagged in git (`vX.Y.Z`). The history of the file converter this project is based on is in
 [converter/CHANGELOG.md](converter/CHANGELOG.md).
 
+## 1.8.0 — consent settings per column (file-converter 0.23.0)
+
+1.7.0 is the `sendsational` branch's version (sending to the main app's bucket), so `main` goes from 1.6.1 to 1.8.0.
+
+- **Each consent column now says what it records**, chosen when it is mapped (the converter's 0.22.0 and 0.23.0):
+  - **Opt-ins only** (e.g. *Email Opt In*): yes → `true`; no → blank. Before, a no was stored as `false` (opted
+    out), though not opting into email isn't opting out of texts.
+  - **Opt-ins and opt-outs** (a column of text opt-ins and opt-outs): yes → `true`; no → `false`.
+  - **Opt-outs only** (new; e.g. *Unsubscribed*, *Opt Out*, *Do Not Text*): yes → `false`; no → blank.
+
+  Pick it with the column in *Goes to* under *Columns in your file* ("consent — opt-outs only") or under the field
+  table; **Start import** stays disabled until every consent column has one. Values that name a status keep their
+  meaning (*Subscribed* and *Active* are opt-ins, *Opted out* an opt-out). Several consent columns are read
+  together: an opt-out in any of them wins, otherwise an opt-in, otherwise blank. Templates never keep a setting.
+- **Translate values on consent** takes opt-in, opt-out or nothing (`DNT=opt-out; OK=`), since true / false and yes /
+  no could be read either way.
+- **More spellings of yes and no**: *Opt-Out*, *Opted_Out*, *Un-subscribed*, `1.0` and full-width letters are read;
+  `-1` is no longer a yes.
+- **The import's page counts consent** under the records stored ("Consent: 120 true (opted in), 15 false (opted
+  out), 300 left blank by the consent settings"), and so does its summary file; *Side by side* shows a value left
+  blank by its setting in teal and an opt-out from an opt-outs-only column in pink, with the column that decided;
+  *What changed* and *Mapping used* show each column's setting.
+- **Imports from before 1.8.0 with consent mapped** were read without settings (a no stored as `false`). Re-running
+  one (after deleting its records) first asks what each of its consent columns records (KNOWN_ISSUES #53).
+- *Suggest fixes* no longer proposes values for consent, and the AI suggestions never map consent or choose its
+  settings (only a person maps consent, as before).
+- Tag exports still leave consent blank. The regression check is identical on all 406 files (consent is only ever
+  mapped by a person), and tag exports still match the converter (parity check).
+
 ## 1.6.1 — locations' addresses on one line
 
 - **A location's address shows as one line**, "25 North Newbridge Road, Hicksville, NY 11801", in the Location
