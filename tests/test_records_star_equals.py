@@ -33,7 +33,9 @@ def two(rstore, records_schema, tmp_path):
     """Record "full" (every field filled) and record "blank" (every field empty), each the only row of its file."""
     def by_hand(m):
         for h, name in FIELD_OF.items():
-            m.fields[name] = FieldMapping(sources=[h], transform="copy", origin="user")
+            # consent: a person also says what its column records (file-converter 0.23.0)
+            m.fields[name] = FieldMapping(sources=[h], transform="copy", origin="user",
+                                          params={"modes": {h: "both"}} if name == "consent" else {})
         return m
     jobs = Store(tmp_path / "c.db")
     csv = ",".join(HEADERS) + "\n" + ",".join(FULL) + "\n" + ",".join(BLANK) + "\n"

@@ -5,7 +5,7 @@ Internal web app that keeps every customer row of every imported file as a searc
 find requests, collected into **tags**, and a tag exports its unique phone numbers in the file converter's import
 format, ready to import into the main system.
 
-Built on the file converter (file-converter 0.21.2): files are read, matched and cleaned by the same engine, with the
+Built on the file converter (file-converter 0.23.0): files are read, matched and cleaned by the same engine, with the
 same rules. **Prototype**; the version is in the app's menu and in [docs/CHANGELOG.md](docs/CHANGELOG.md).
 
 **Quick start (Mac):**
@@ -31,7 +31,7 @@ database on first start. On one computer there is no login; the server setup has
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) | everyone | what changed in each version |
 | [docs/HANDOFF.md](docs/HANDOFF.md) | whoever continues the work | how changes are made and delivered, the business's decisions, open questions |
 | [docs/BUCKET_FILES.md](docs/BUCKET_FILES.md) | the main app's developers | the files sent to the main app's bucket: folders, names, columns, deletions, tag snapshots, and ClickHouse tables that load them |
-| [docs/converter/](docs/converter/README.md) | everyone | the file converter's documents (0.21.2): every rule for phone numbers, dates and column matching used by each import |
+| [docs/converter/](docs/converter/README.md) | everyone | the file converter's documents (0.23.0): every rule for phone numbers, dates and column matching used by each import |
 
 ```
 Merchants / Services:  merchants and locations loaded from the main app; the list of services set up once
@@ -51,7 +51,7 @@ Main app:    every completed import, its deletion, and each tag exported or sent
 | **Find** | Find records with requests (see [Finding records](#finding-records)); limit to merchants, locations and services; see the found set, one record's details (every field, its numbers, the row as in the file, its tags); omit records; add the found set to a tag or make a new tag from it; download the found set as CSV. |
 | **Tags** | Every tag with its merchant, records and unique numbers. One tag: export (download and preview), *Send to the main app*, its records (remove some), rename, notes, delete, and its history (who added or removed how many records, exports). |
 | **New import** | Choose the merchant, its location (filled in when it has one) and the service, upload a file, check how it was read, review the column mapping (the converter's page), start the import. Warns when the same file was already imported for that merchant. |
-| **Imports** | Every import with its merchant, location, service, status, progress and records. One import: records stored, numbers, rows without a usable number, side by side (original vs cleaned), what changed, the mapping used, the mistake check, *Show this import's records in Find*, *Delete this import's records*, and whether it was sent to the main app. |
+| **Imports** | Every import with its merchant, location, service, status, progress and records. One import: records stored, numbers, rows without a usable number, consent (when mapped), side by side (original vs cleaned), what changed, the mapping used, the mistake check, *Show this import's records in Find*, *Delete this import's records*, and whether it was sent to the main app. |
 | **Merchants** | The main app's merchants and their locations, with their IDs, imports, records and tags; loaded from the main app (automatically from its ClickHouse, or from a CSV exported there and uploaded here), never typed in. See [Merchants and locations](#merchants-and-locations). Also *Sending to the main app*: what was sent, what waits and why. |
 | **Services** | The list every import picks from: add, rename, deactivate (no longer offered; its records keep it), delete one no import uses. |
 | **Templates** | Saved column mappings per file layout (as in the converter). The merchant, location and service are chosen for each import, not saved. |
@@ -107,7 +107,8 @@ The column matching, the review page and every conversion rule are the converter
 - **One location per import.** A file that mixes several locations (a corporate export with a *Store* column) has to
   be split before importing, for now.
 - **Re-running** a completed import (after fixing the mapping): delete its records first (*Delete this import's
-  records* on its page), which also takes them out of their tags; then *Re-run this import*.
+  records* on its page), which also takes them out of their tags; then *Re-run this import*. An import from before
+  1.8.0 that had consent mapped first asks what each of its consent columns records (KNOWN_ISSUES #53).
 
 ### Record fields
 
@@ -128,7 +129,7 @@ The column matching, the review page and every conversion rule are the converter
 | **Date** (searched, not stored) | date only | the later of Last visit / order and Last call: what Find and the found set show as the record's date |
 | Last contacted | date and time | **mapped by hand only** (as in the converter) |
 | Birthday, Anniversary | date; 1600 = no year | as in the converter |
-| Consent | true / false | **mapped by hand only** (as in the converter) |
+| Consent | true / false | **mapped by hand only**, with what each column records: opt-ins only (a no is left blank), opt-ins and opt-outs, or opt-outs only (a yes is false); several columns are read together and an opt-out in any of them wins (as in the converter, 0.23.0) |
 
 To add a field, add it to the YAML file and restart the app: its database column is added on start.
 
@@ -401,7 +402,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 app.py                     Streamlit web app (the converter's pages with Customer Records' changes)
 records/                   Customer Records: config, db (tables), store, importer (records from an import),
                            fields + criteria + find (FileMaker-style finds), tags (exports), ui (new pages)
-converter/                 the file converter's engine (0.21.2, with two small additions: see ARCHITECTURE)
+converter/                 the file converter's engine (0.23.0, with two small additions: see ARCHITECTURE)
 schemas/records_schema.yaml   the record fields
 schemas/target_schema.yaml    the export format (the converter's import format)
 scripts/regression/        regression.py (converter output vs a version), parity.py (tags vs converter)

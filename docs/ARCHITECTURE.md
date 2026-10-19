@@ -7,7 +7,7 @@ connected to the main system. The conversion engine it is built on is described 
 ## Design principles
 
 1. **The converter decides every value.** Files are read, matched and cleaned by the file converter's engine
-   (`converter/`, 0.21.2), unchanged except for two small additions (below). Every rule, approved repair and
+   (`converter/`, 0.23.0), unchanged except for two small additions (below). Every rule, approved repair and
    business decision of the converter applies to records; fixes made to the converter can be ported in.
 2. **Keep everything, decide later.** Every file row is a record, with its cleaned fields *and* the row as written.
    Rows without a usable number are kept. Nothing is merged at import; merging happens when a tag is exported.
@@ -198,10 +198,13 @@ here.
 starts a private server for the session (from `initdb`/`pg_ctl` found on the PATH, Homebrew, Postgres.app or
 Debian/Ubuntu; as the `postgres` user when run as root), or uses `RECORDS_TEST_DATABASE_URL`. Each test gets a fresh
 database. Without PostgreSQL those tests are skipped with a message; the converter's ~1,000 tests don't need it.
+`test_consent_choice.py` is the converter's (0.23.0) with its app tests adapted: they run New import and an
+import's page with a records database, and the re-run of an import from before 0.22.0 checks the records it
+stores.
 
 | Test module | Covers |
 |---|---|
-| `test_records_import.py` | one record per row, all numbers, rows without numbers, every column, Skip, typed values (the last visit as a day, mapped and checked as the converter does), consent by hand only, repaired numbers, creation-date fallback, cancel/fail cleanup, same file, delete import, 20,000 rows |
+| `test_records_import.py` | one record per row, all numbers, rows without numbers, every column, Skip, typed values (the last visit as a day, mapped and checked as the converter does), consent by hand only and as each column's consent setting says, repaired numbers, creation-date fallback, cancel/fail cleanup, same file, delete import, 20,000 rows |
 | `test_records_find.py` | every criterion kind and operator, half ranges, FileMaker request order, Omit with empty fields, business and service pickers, blank requests and finds, Record created, constrain/extend/omit/show omitted, tags as found sets, messages, counts, CSV, sorting |
 | `test_records_find_edges.py` | the cases the independent test found: accented letters (ICU and C-locale databases), business ID vs names, times in dates, today's time zone, `+1 516*`, no-year birthdays, apostrophes and punctuation, backward ranges, `#12`; 1.1.0 and 1.2.0 reviews (the date-only last visit, whole names in First name) |
 | `test_records_star_equals.py` | `*` alone finds the records with a value and `=` alone the blank ones, for every field a find can search (also unreadable values); with other text they keep their meanings; an Omit keeps the records whose field is blank, for every field made NULL-safe without COALESCE |

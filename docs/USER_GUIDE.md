@@ -32,7 +32,12 @@ Templates, Fields, and Users for admins on the server).
 2. Upload the file (CSV, Excel and the other formats the converter reads).
 3. Check how it was read and how its columns map to the record fields, exactly as in the converter (field grid,
    *Columns in your file*, notes, *Check for mistakes*). Columns that feed no field are still kept on each record
-   as written; tick **Skip** to leave a column out completely.
+   as written; tick **Skip** to leave a column out completely. **Consent** is only filled when you send a column to
+   it, and you say what each such column records: *opt-ins only* (a no is left blank, e.g. an *Email Opt In*
+   column: not opting into email isn't opting out of texts), *opt-ins and opt-outs* (a no is an opt-out), or
+   *opt-outs only* (e.g. *Unsubscribed*: a yes is an opt-out, a no is left blank). Pick it in *Goes to*
+   ("consent — opt-ins only") or under the field table; **Start import** waits until every consent column has one.
+   Several consent columns are read together: an opt-out in any of them wins.
 4. **Start import**. It runs in the background; its page shows the progress, then how many records were stored,
    how many different phone numbers, and how many rows have no usable number. Up to five imports run at the same
    time (everyone's together); more wait as *Queued* and start by themselves.
@@ -47,6 +52,9 @@ Good to know:
 - **A mistake in the mapping?** Open the import, *Delete this import's records* (tick the box first), then *Re-run
   this import*, or upload the file again. Deleting also takes the records out of any tag they were in, and the
   tag's history says so. If the import had already been sent to the main app, its deletion is sent too (section 6).
+- **Consent from imports before 1.8.0** was read without the settings above: a no in an opt-in column was stored as
+  *false*. Re-run such an import (as above) to read its consent again; the re-run first asks what each of its
+  consent columns records.
 
 ## 3 · Find records
 

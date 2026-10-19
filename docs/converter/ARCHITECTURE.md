@@ -100,7 +100,9 @@ All business logic is in `converter/`. Only `app.py` and `converter/auth.py` imp
 header, quoting), `dedupe` (`DedupeSpec`: `keys`, `keep`; `["*"]` = every field) and `fields` (list of
 `FieldSpec`). A `FieldSpec` carries:
 - `name`, `header`, `type`, `required` and `format`;
-- the rules: `on_invalid`, `countries` (phones), `no_year_value` (dates) and `fixed_blank`;
+- the rules: `on_invalid`, `countries` (phones), `no_year_value` (dates), `fixed_blank`, `manual_only` and
+  `opt_out_choice` (boolean: the person mapping a column to it chooses that column's consent setting: opt-ins
+  only, opt-ins and opt-outs or opt-outs only);
 - string options: `case`, `max_length` and `truncate`;
 - `allowed_values`, `default` and `synonyms`.
 
@@ -192,6 +194,7 @@ changes (`Store.purge_drafts`).
 | Birthday/anniversary without a real year → year 1600 | `dateparse` (`NO_YEAR`), `normalizers.normalize_date`, `_placeholder_year`; schema `no_year_value` |
 | Times with a zone converted to the client's time zone | `dateparse._to_zone`; zone chosen per import on the New import page |
 | Consent and last_contacted only mapped by a person | schema `manual_only`; `Mapping.normalized` drops any mapping of them not made by a person (`origin="user"`); skipped by `heuristics.auto_map`, refused in `ai.parse_mapping_entries`, left out of templates (`Mapping.without_manual`, `services.template_mapping`) |
+| Consent: each consent column has a setting chosen by whoever maps it (0.23.0): opt-ins only (no → blank), opt-ins and opt-outs (no → false), opt-outs only (yes → false, no → blank); status words (Subscribed / Active / Opted out) and translated values keep their meaning; several columns are read together per row and an opt-out wins (First non-empty kept only as 0.22.0 stored it: the first filled column decides; a person's edit, or settings chosen on re-run, make it Consent columns); a consent translation takes only opt-in / opt-out / nothing (`editor.parse_option`); an empty cell is never translated; nothing assumed, Start import (and Re-run of an older import) blocked until every column has one; a column's setting goes with it; never from Claude; 0.22.0's one choice becomes each column's setting | schema `opt_out_choice`; transform `consent` ("Consent columns", `mapping.consent_rule`); param `modes` (`mapping.CONSENT_MODES`, `consent_modes`, `parse_consent_mode`, `FIELD_PARAMS`, `FieldMapping._consent_from_0_22`; kept per column by `normalized` / `editor.apply_row_edit` / `_without_column`; dropped by `ai.parse_mapping_entries`); `Mapping.without_manual` (templates drop settings); `mapping.consent_missing` / `consent_problem` (in `Mapping.problems`, `editor.row_problem`, `engine.preview_values`); `normalizers.consent_reading`; `engine._consent_cell` / `_convert_consent` (`CELL_OPTOUT` teal, `CELL_UNSUB` pink, `consent_counts`); `compare`, `output.write_summary`, `numberlog.consent_source` / `_consent_cells`; `editor.goes_to_options` / `goes_to_cell` / `read_goes_to`, `apply_column_edit(settings=)`; `app.on_consent_setting`, `app.rerun_import` / `_ask_rerun_consent` |
 | Duplicates only when every column matches | schema `dedupe: keys: ["*"]`; `engine.convert` |
 | Bad rows not imported, counted with reasons | `engine.convert` (`RowIssue.rejected`), `output.write_rejects`, summary |
 | No live spreadsheet formulas in downloads (client values starting with `=`, `+`, `-`, `@` get an apostrophe) | `output.neutralise_formula`, `write_rejects`; `app.rejects_download` for files from older versions |

@@ -3,6 +3,73 @@
 What changed in each version. The running version is shown in the app's sidebar. Each version is tagged in git
 (`vX.Y.Z`).
 
+## 0.23.0 — consent settings per column: opt-ins only, opt-ins and opt-outs, opt-outs only
+
+- **Each consent column now has its own setting, chosen when it is mapped.** 0.22.0 had one choice for the whole
+  file and no way to import a column of opt-outs. Now every column sent to consent says what it records:
+  - **Opt-ins only** (e.g. *Email Opt In*): yes → `true`; no → blank.
+  - **Opt-ins and opt-outs** (a column of text opt-ins and opt-outs): yes → `true`; no → `false`.
+  - **Opt-outs only** (new; e.g. *Unsubscribed*, *Opt Out*, *Do Not Text*): yes → `false`; no → blank.
+
+  Values that name a status keep their meaning in every setting (*Subscribed* and *Active* are opt-ins, *Opted
+  out* an opt-out); the setting decides which ones are imported. So does a translated value: on consent,
+  *Translate values* now takes only **opt-in**, **opt-out** or nothing (`DNT=opt-out; OK=`), because true / false
+  and yes / no could be read either way. Translations saved before 0.23.0 keep their meaning (`true` / yes
+  subscribed, `false` / no opted out), so a re-run can't turn them around. An empty cell is never translated. A fixed value needs no
+  setting.
+- **Chosen with the column mapping.** Under *Columns in your file*, *Goes to* offers `consent — opt-ins only`,
+  `consent — opt-ins and opt-outs` and `consent — opt-outs only`; consent columns add up like phone columns. Under
+  the field table each consent column has its own question, and the grid's Option cell takes the settings too
+  (`Email Opt In: opt-ins only; Unsubscribed: opt-outs only`; a setting alone only when consent has one column).
+  Start import stays disabled until every consent column has one; a column added later is asked for, one removed
+  takes its setting with it. Templates never keep a setting.
+- **Several consent columns are read together**, row by row: an opt-out in any of them wins (`false`), otherwise
+  an opt-in (`true`), otherwise blank. *Email Opt In* = Y with *Unsubscribed* = Yes gives `false`. The grid's How
+  for consent is the new **Consent columns** (a copy or *First non-empty* on consent becomes it). Imports made with
+  0.22.0 that combined consent columns with *First non-empty* keep it when re-run as they are (the first column
+  with a value decides), so they give the same result; any change to their consent turns it into *Consent
+  columns*.
+- **Reports:** the result banner and the summary file count consent in the converted file ("Consent in the
+  converted file: 120 true (subscribed), 15 false (unsubscribed), 300 left blank by the consent settings"); *What
+  changed* counts every row read, like its other columns.
+  *Side by side* shows a value left blank by its setting in teal and a `false` from an opt-outs-only column in
+  pink, with the deciding column ("Unsubscribed: Yes"); *What changed* counts both. Number history, *Mapping used*
+  and *What changed* show each column's setting, also for imports mapped before 0.23.0 once they have one.
+- **Yes/no values:** `-1` is no longer read as 1 (it can mean "unknown"); *Active* is an opt-in in every setting,
+  so an opt-outs-only column never unsubscribes it.
+- **Imports made with 0.22.0** keep their choice: opt-ins only becomes each column's *opt-ins only*, opt-ins and
+  opt-outs each column's *opt-ins and opt-outs*, and *First non-empty* stays. Re-running an import from before
+  0.22.0 asks for each consent column's setting first (naming its translation, if it has one) and then reads its
+  columns together.
+- All 406 test files give identical results (consent is only ever mapped by a person).
+
+## 0.22.0 — consent: opt-ins only, or opt-ins and opt-outs
+
+- **Whoever maps consent now says what a "no" means.** A client's *Email Opt In* column says whether the customer
+  opted into email; a "no" there isn't an opt-out of texts, but it was imported as `false`, which unsubscribes the
+  customer. When consent has a column, the mapping page now asks:
+  - **Opt-ins only:** yes → `true`; no → left blank, so the import opts nobody out.
+  - **Opt-ins and opt-outs:** yes → `true`; no → `false` (as before; only for a column of text opt-outs).
+
+  Neither is assumed: **Start import** stays disabled until one is chosen, and choosing another column for consent
+  asks again. The choice is shown wherever the mapping is (*Mapping used*, *What changed*, the side-by-side
+  headers, Number history's *Consent from*). With opt-ins only, each "no" left blank is teal in *Side by side* and
+  counted in the result banner, *What changed* and the summary file. New target-format setting `opt_out_choice`
+  (boolean fields), set on consent.
+- **Re-running an import made before 0.22.0** that had consent mapped asks the same question on the import's page
+  first: the *Re-run* buttons stay disabled until it is answered, so an old mapping can't quietly write `false`.
+- **Removing a consent column asks again.** Taking one column out of a multi-column consent (or skipping it, or
+  re-reading a file where it's gone) clears the choice, because it was about all of them.
+- **The grid's preview waits for the choice:** before it is made, consent's sample reads "choose below what a no
+  means" instead of showing `false`.
+- **More spellings of yes and no:** hyphens, underscores and spaces are ignored and full-width letters and
+  spreadsheet numbers (`1.0` / `0.0`) are read, so *Opt-Out*, *Opted_Out*, *Un-subscribed*, *Opt-In* and `1.0` are
+  understood. Before, *Opt-Out* was left blank: a real opt-out was dropped.
+- **Suggest fixes no longer proposes values for yes/no fields** (it could have turned *maybe* into `false`).
+- The count of "no"s left blank includes every row, like the other counts, so the banner, the summary and *What
+  changed* always agree.
+- All 406 test files give identical results (consent is only ever mapped by a person).
+
 ## 0.21.2 — the country code next to an area code column
 
 - **Area code cells with the country code** (`1-516`, `+1 516`, `+1 (516)`, `1516`) were not recognised, so the
