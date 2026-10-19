@@ -92,16 +92,23 @@ def test_values_are_typed(rstore, jobs, records_schema):
 
 
 def test_consent_only_when_a_person_maps_it(rstore, jobs, records_schema):
-    """As in the converter: the rules never fill consent; a person's mapping stores true/false."""
+    """As in the converter: the rules never fill consent; a person's mapping stores true/false, as the column's
+    consent setting says (file-converter 0.23.0)."""
     csv = "Phone,SMS Opt In\n5165550100,Y\n5165550101,N\n5165550102,maybe\n"
     _, imp = import_file(rstore, jobs, records_schema, "optin.csv", csv)
     assert [r["consent"] for r in records_of(rstore, imp)] == [None, None, None]
 
-    def by_hand(m):
-        m.fields["consent"] = FieldMapping(sources=["SMS Opt In"], transform="copy", origin="user")
-        return m
-    _, imp2 = import_file(rstore, jobs, records_schema, "optin2.csv", csv, edit=by_hand)
-    assert [r["consent"] for r in records_of(rstore, imp2)] == [True, False, None]
+    def by_hand(mode):
+        def edit(m):
+            m.fields["consent"] = FieldMapping(sources=["SMS Opt In"], transform="copy", origin="user",
+                                               params={"modes": {"SMS Opt In": mode}} if mode else {})
+            return m
+        return edit
+    expected = {"both": [True, False, None], "in": [True, None, None], "out": [False, None, None],
+                None: [None, None, None]}  # no setting: the column is ignored (the page doesn't let it import)
+    for n, (mode, values) in enumerate(expected.items()):
+        _, imp2 = import_file(rstore, jobs, records_schema, f"optin{n}.csv", csv, edit=by_hand(mode))
+        assert [r["consent"] for r in records_of(rstore, imp2)] == values, mode
 
 
 def test_repaired_numbers_are_marked_and_keep_the_original(rstore, jobs, records_schema):
