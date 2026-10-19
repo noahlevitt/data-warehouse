@@ -39,4 +39,4 @@ Everything except ``ui`` is free of Streamlit and is tested against a real Postg
 # number (converter.__version__, file-converter's) so it is clear which converter release the engine came from.
 # On the sendsational branch (the connection to the main app's bucket): <version>-sendsational, tagged
 # sendsational-<version>.
-__version__ = "1.7.0-sendsational"
+__version__ = "1.8.0-sendsational"
