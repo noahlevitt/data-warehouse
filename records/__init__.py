@@ -2,7 +2,7 @@
 
 Overview
 --------
-Customer Records is built on the file converter (the ``converter`` package, file-converter 0.21.2): a file is read,
+Customer Records is built on the file converter (the ``converter`` package, file-converter 0.23.0): a file is read,
 its columns are matched and the values cleaned exactly as the converter does, but instead of producing one import
 file the rows are stored in PostgreSQL, one record per file row, tied to the merchant, location and service chosen
 for the import (merchants and locations are the main app's, records.merchants). Records are found with
@@ -36,4 +36,4 @@ Everything except ``ui`` is free of Streamlit and is tested against a real Postg
 
 # Customer Records' own version (shown in the sidebar, tagged vX.Y.Z in git). The conversion engine keeps its own
 # number (converter.__version__, file-converter's) so it is clear which converter release the engine came from.
-__version__ = "1.6.1"
+__version__ = "1.8.0"
