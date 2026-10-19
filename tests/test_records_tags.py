@@ -71,7 +71,8 @@ def test_birthday_with_a_year_wins(rstore, jobs, records_schema, real_schema):
 def test_consent_is_always_blank(rstore, jobs, records_schema, real_schema):
     """Decision 2026-10-14: the main system handles opt-outs per business; the records keep the file's consent."""
     def by_hand(m):
-        m.fields["consent"] = FieldMapping(sources=["Opt In"], transform="copy", origin="user")
+        m.fields["consent"] = FieldMapping(sources=["Opt In"], transform="copy", origin="user",
+                                           params={"modes": {"Opt In": "both"}})
         return m
     import_file(rstore, jobs, records_schema, "a.csv", "Phone,Opt In\n5165550100,Y\n5165550101,N\n", edit=by_hand)
     assert [r["consent"] for r in rstore.db.fetch("SELECT consent FROM records ORDER BY id")] == [True, False]
