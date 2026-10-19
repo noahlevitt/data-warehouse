@@ -61,7 +61,7 @@ number.
 | `transactions_last` | the last visit or purchase, `YYYY-MM-DD` (day only) |
 | `calls_last`, `in_sms_last`, `redemptions_last`, `spin_last`, `last_contacted` | `YYYY-MM-DD HH:MM:SS` |
 | `birthday`, `anniversary` | `YYYY-MM-DD`; the year **1600** means the year is unknown (month and day are right) |
-| `consent` | `true` / `false` as the file said; empty when it didn't (tag exports leave consent blank: the main app's opt-outs decide) |
+| `consent` | `true` (opted in) / `false` (opted out) as the file's consent columns say, each read with the setting the person mapping it chose: *opt-ins only* leaves a no empty, *opt-ins and opt-outs* makes a no `false`, *opt-outs only* (e.g. *Unsubscribed*) makes a yes `false`; with several columns an opt-out in any of them wins (1.8.0). Empty when consent wasn't mapped, the cell was empty, or a setting left it empty. Tag exports leave consent blank: the main app's opt-outs decide |
 | `first_visit_as` | when the imported file had **no** last-activity column at all, the activity its sign-up date stands for (`transactions_last`, or `calls_last` for a call log), as the converter does; else empty |
 | `source` | the imported row's cells that aren't empty, each exactly as read from the file, as a JSON object (`{"First Name":"Ann",…}`); empty cells are left out, and the columns' order isn't kept |
 
