@@ -3,10 +3,10 @@
 For whoever picks Customer Records up next: a person, or Claude in a new chat. It records what the code and the
 other documents don't: how changes are made and delivered, the decisions the business made, and what is still open.
 
-**State:** version 1.6.0, the first prototype (see [CHANGELOG.md](CHANGELOG.md)), based on file-converter 0.21.2.
-About 1,270 tests. Repository: github.com/noahlevitt/data-warehouse, with its own git history: it started from the
+**State:** version 1.8.0, a prototype (see [CHANGELOG.md](CHANGELOG.md)), based on file-converter 0.21.2 with its
+0.22.0 and 0.23.0 ported in (section 5). About 1,330 tests. Repository: github.com/noahlevitt/data-warehouse, with its own git history: it started from the
 converter's files, not from its history (section 5).
-Owner: Noah Levitt. Last updated 2026-10-15. Update this file with every release (section 4 in particular).
+Owner: Noah Levitt. Last updated 2026-10-19. Update this file with every release (section 4 in particular).
 
 What the tool does, and how, is in the [README](../README.md) and the documents it lists. Read
 [ARCHITECTURE.md](ARCHITECTURE.md) before changing code and [KNOWN_ISSUES.md](KNOWN_ISSUES.md) before calling
@@ -57,15 +57,23 @@ something a bug. The conversion engine's own handoff, with the converter project
 
 **Documents** — every change in behaviour updates, as they apply: README, docs/USER_GUIDE, docs/ARCHITECTURE
 (modules, tables, key behaviours), docs/KNOWN_ISSUES, `.env.example` (settings), docs/CHANGELOG, this file, and the
-overview at the top of each changed source file. `docs/converter/` holds the converter's documents as of 0.21.2:
+overview at the top of each changed source file. `docs/converter/` holds the converter's documents as of 0.23.0:
 change them only when a converter fix is ported in (section 5).
 
 **Delivery** (when the changes can't be pushed directly)
 - Changes go to Noah as a git bundle, `data-warehouse-updateN.bundle`, numbered in order. The repository itself
   came as `data-warehouse-1.0.0.bundle` (complete, no prerequisites); 1.0.1 came as update1, 1.0.2 as update2,
   1.1.0 as update3, 1.2.0 as update4, 1.2.1 as update5, 1.3.0 as update6, 1.3.1 as update7, 1.4.0 as update8,
-  1.5.0 as update9, 1.6.0 as update10 and 1.6.1 as update11 (with 1.6.0, for a copy still on 1.5.0), so the next is
-  `data-warehouse-update12.bundle`. Update this line with each bundle.
+  1.5.0 as update9, 1.6.0 as update10 and 1.6.1 as update11 (with 1.6.0, for a copy still on 1.5.0). update12 (the
+  bucket work as 1.7.0 on `main`) was withdrawn before it was installed; the `sendsational` branch came as update13
+  (1.7.0-sendsational); 1.8.0 and 1.8.0-sendsational came together as update14, so the next is
+  `data-warehouse-update15.bundle`. Update this line with each bundle.
+- **Branches** (Noah, 2026-10-17): `main` is the standalone app; `sendsational` holds the connection to the main
+  app through its bucket (records.bucket, BUCKET_FILES.md), which needs the main app's side to work. Its versions
+  are `<version>-sendsational`, tagged `sendsational-<version>`; a bundle for it carries the branch
+  (`git fetch <bundle> sendsational:sendsational`) instead of moving `main`. 1.7.0 is only the branch's (main went
+  from 1.6.1 to 1.8.0); since then a release on `main` is merged into the branch (`git merge main`, the merge's
+  conflicts resolved in that one commit) and released there with the same number, `X.Y.Z-sendsational`.
 
   ```bash
   git bundle create ../data-warehouse-updateN.bundle main vX.Y.Z ^vPREVIOUS
@@ -106,6 +114,7 @@ Decided by Noah on 2026-10-14 unless marked otherwise. Don't reverse one without
 | Tags | One merchant per tag (Noah, 2026-10-16; was one business per tag). Deduplicated (one row per number) when exported. **Tags will be the merchant's segments in the main app**, directly if possible, because the main app can no longer make a segment from a single import (Noah, 2026-10-16). Planned (1.7.0): Customer Records writes each tag's numbers to its own ClickHouse table and the main app gets a segment type that reads it (its `audience_members` is re-evaluated, so rows written there directly would be lost). Needs write access and the lead developer's side. |
 | Export format | The file converter's import format, until the systems are connected. |
 | Consent in exports | Not sent (blank): opt-outs are per business and the main system handles them; once connected, it will know who is opted in or out. Records keep the file's consent. |
+| Consent settings | Whoever maps a column to consent says what it records: opt-ins only, opt-ins and opt-outs, or opt-outs only; nothing is assumed (the converter's decision, 0.22.0 and 0.23.0; Noah asked for it in Customer Records on 2026-10-19, built in 1.8.0). |
 | Before tagging (later) | Deduplicate, check that numbers are cell phones, and remove numbers on the Do Not Call list unless within an 18-month established business relationship. Depends on the main system; not built. |
 | Platform | A web app or something launched on the computer, Mac first, Windows too. Built as the converter: a local web app (`./run_local.sh`), Docker for a server. |
 | Finds | Nothing is ever required; a blank Find shows every record. The common finds are a business, a business and one or more services, and a business without a service (an Omit request), so each request has Business and Services pickers; a business isn't required either (e.g. a phone number alone). Dates by day or range, also open-ended: `...1/1/2026` up to that day, `1/1/2025...` from it. Every record has its own ID and a creation date, both searchable. (Noah, 2026-10-14, after trying 1.0.2.) |
@@ -265,6 +274,16 @@ Customer Records (the repository is `data-warehouse`), and version 1.0.0.
   `\r`) or a 130,000-character cell showed a traceback instead of a message. Not fixed (none occur in the real data):
   a street given as a list is left out; a file saved in Mac Roman is read as Windows encoding; ClickHouse's own TSV
   export escapes an apostrophe as `\'`, which leaves such an address as raw JSON (the page says to export CSV).
+- **Independent test of 1.8.0** (limited: consent settings; about 15 minutes, a separate agent working from the
+  documents, with real imports and the browser): no serious defect. Confirmed: 63 spellings in each setting, several
+  columns (an opt-out wins whatever their order), translations, Start import blocked until every column has a
+  setting, templates without settings, the import page's consent line against the database, the re-run of an import
+  from before 1.8.0 (asked only after its records are deleted; its columns read together), Find by consent. Two
+  findings are the converter's own rules, ported unchanged, to raise in the file-converter project rather than here:
+  `✔` (U+2714) and `☑` aren't read as yes (only `✓` and `x`), so such an opt-out in an opt-outs-only column is left
+  blank and flagged; on consent, *Translate values* accepts status words (`DNT=subscribed`, `DNT=Opted out`) but
+  refuses `Active` (deliberately: "DNT=active" reads like "the flag is on"), while its message only names opt-in,
+  opt-out or nothing.
 - Limits known and accepted: [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
 ## 5. Taking fixes from the file converter
@@ -276,14 +295,14 @@ no link to the converter's: it starts with the converter's files as of file-conv
 as patches**, not merged or cherry-picked:
 
 1. In a clone of file-converter, write the changes since the converter commit last ported (`57b8c9c` for 1.0.0;
-   update this line after every port) up to the new version, in three patches (the converter's documents live in
-   `docs/converter/` here):
+   `7961b94`, v0.23.0, for 1.8.0; update this line after every port) up to the new version, in three patches (the
+   converter's documents live in `docs/converter/` here):
 
    ```
    cd ~/Downloads/file-converter
-   git diff 57b8c9c vNEW -- . ':(exclude)README.md' ':(exclude)docs' > /tmp/converter-code.patch
-   git diff 57b8c9c vNEW -- README.md > /tmp/converter-readme.patch
-   git diff --relative=docs 57b8c9c vNEW -- docs > /tmp/converter-docs.patch
+   git diff 7961b94 vNEW -- . ':(exclude)README.md' ':(exclude)docs' > /tmp/converter-code.patch
+   git diff 7961b94 vNEW -- README.md > /tmp/converter-readme.patch
+   git diff --relative=docs 7961b94 vNEW -- docs > /tmp/converter-docs.patch
    ```
 2. Apply them here, with three-way merging (the converter's original files are in this history, so it works even
    for files Customer Records changed):
@@ -297,11 +316,19 @@ as patches**, not merged or cherry-picked:
    `.streamlit/config.toml` (keep port 8502 everywhere), `converter/jobs.py`, `schema.py`, `heuristics.py`
    (ARCHITECTURE.md → Additions to the converter), `tests/conftest.py`, `tests/test_drafts.py`,
    `scripts/regression/regression.py` (its example), `docs/converter/README.md` (the note at the top).
-   The exact changes: `git diff $(git log -1 --format=%h --grep='(file-converter 0.21.2)') HEAD -- converter`.
+   The exact changes: `git diff $(git log -1 --format=%h --grep='(file-converter 0.21.2)') HEAD -- converter`
+   (Customer Records' additions and the ports since).
 3. Commit as always (one commit per file, e.g. "Port the area code fix from file-converter 0.22.0"), then the
    regression check (the differences are the fix's), the parity check and the whole suite (section 1). Note the
-   converter version in CHANGELOG.md and in the overviews that name 0.21.2 (README, ARCHITECTURE,
-   `records/__init__.py`, `app.py`).
+   converter version in CHANGELOG.md and in the overviews that name it (README, ARCHITECTURE,
+   `records/__init__.py`, `app.py`, the note at the top of `docs/converter/README.md`).
+
+**Ported so far:** 0.22.0 and 0.23.0 (consent settings per column) in 1.8.0. Conflicts were in `schema.py` (both
+validations kept: `creation_date` and `opt_out_choice`) and `app.py` (Customer Records' re-run creates a records
+import; the re-run consent question shows only when `can_rerun` allows a re-run). `schemas/records_schema.yaml`
+needed `opt_out_choice: true` on consent by hand (the patch only changes the converter's format). The app tests of
+`tests/test_consent_choice.py` were adapted (records database, Customer Records' import page, the re-run's records
+checked), and Customer Records' own tests that map consent by hand now give each column a setting.
 
 ## 6. Where things live
 
@@ -314,6 +341,6 @@ as patches**, not merged or cherry-picked:
 | The app's own data (import jobs, templates, each import's files) | `data/` — never in git |
 | Find syntax (the reference) | `records/criteria.py` (module docstring, also shown on the Find page) |
 | Regression and parity checks | `scripts/regression/` |
-| The converter's documents (0.21.2) | `docs/converter/` |
+| The converter's documents (0.23.0) | `docs/converter/` |
 | The converter's files as Customer Records started from them | the first commits, messages ending `(file-converter 0.21.2)` |
 | Python | 3.11 or newer; the Docker image uses 3.12 |
