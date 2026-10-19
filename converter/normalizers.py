@@ -1476,21 +1476,62 @@ def normalize_decimal(value: str, field: FieldSpec, params: dict, ctx: dict) -> 
 # Words (lower-cased) meaning yes / no in opt-in, status and checkbox columns ("x" and "✓" are ticked boxes).
 TRUE_TOKENS = {"y", "yes", "true", "t", "1", "x", "on", "opted in", "opt in", "optin", "subscribed", "active", "✓"}
 FALSE_TOKENS = {"n", "no", "false", "f", "0", "off", "opted out", "opt out", "optout", "unsubscribed", "inactive"}
+# The same, as compared by normalize_boolean (_boolean_key: no spaces, hyphens or underscores).
+_TRUE_KEYS = {t.replace(" ", "") for t in TRUE_TOKENS}
+_FALSE_KEYS = {t.replace(" ", "") for t in FALSE_TOKENS}
 
 
 def normalize_boolean(value: str, field: FieldSpec, params: dict, ctx: dict) -> tuple[str, str | None]:
     """Normalizer for "boolean" fields: yes/no words → field.true_value / field.false_value.
 
-    "yes", "Y", "1", "x", "Subscribed" → true_value; "no", "0", "Unsubscribed", "opted out" → false_value;
+    "yes", "Y", "1", "x", "Subscribed" → true_value; "no", "0", "Unsubscribed", "opted out", "Opt-Out" → false_value;
     anything else → ("", "not a yes/no value"). The real schema's consent column uses this when a person maps a
     column to it (true / false; any other value is left blank, which changes nobody's consent).
     """
-    v = value.strip().lower()
-    if v in TRUE_TOKENS:
+    v = _boolean_key(value)
+    if v in _TRUE_KEYS:
         return field.true_value, None
-    if v in FALSE_TOKENS:
+    if v in _FALSE_KEYS:
         return field.false_value, None
     return "", "not a yes/no value"
+
+
+# Values that name a subscription status rather than answer yes or no (as _boolean_key compares them). A consent
+# column set to "opt-outs only" reads its plain yes as an opt-out, but these keep their own meaning there (0.23.0).
+_OPT_IN_STATUS = {"optedin", "optin", "subscribed", "active"}
+_OPT_OUT_STATUS = {"optedout", "optout", "unsubscribed"}
+
+
+def consent_reading(value: str) -> str | None:
+    """How a consent cell reads, before its column's consent setting is applied (0.23.0): "yes" / "no" for a plain
+    yes/no value ("Y", "1", "True", "No"), "in" / "out" for a value naming a status ("Subscribed", "Opt-In",
+    "Active", "Opted out", "Unsubscribed"), None for anything else ("maybe", "-1", ""). "Inactive" is a plain no:
+    it may only mean a customer who hasn't visited, so it never opts anyone out of an opt-outs-only column.
+
+    Spellings as in :func:`normalize_boolean` (case, spaces, hyphens and underscores don't matter).
+    """
+    v = _boolean_key(value)
+    if v in _OPT_IN_STATUS:
+        return "in"
+    if v in _OPT_OUT_STATUS:
+        return "out"
+    if v in _TRUE_KEYS:
+        return "yes"
+    if v in _FALSE_KEYS:
+        return "no"
+    return None
+
+
+def _boolean_key(value: str) -> str:
+    """A yes/no value reduced for comparison: full-width characters made ASCII, lower case, a spreadsheet ".0"
+    removed, and spaces, hyphens and underscores dropped. "Opt-Out" → "optout", "Un-subscribed" → "unsubscribed",
+    "1.0" → "1", "Ｎ" → "n" (0.22.0; before, these weren't read as yes/no). A minus sign in front of a number is kept,
+    so "-1" (an "unknown" in some systems) isn't read as 1 (0.23.0)."""
+    v = unicodedata.normalize("NFKC", value).strip().lower()
+    v = _FLOAT_ARTIFACT_RE.sub(r"\1", v)
+    if re.fullmatch(r"-\s*\d+(\.\d+)?", v):
+        return v.replace(" ", "")
+    return re.sub(r"[\s\-_]+", "", v)
 
 
 def normalize_enum(value: str, field: FieldSpec, params: dict, ctx: dict) -> tuple[str, str | None]:
