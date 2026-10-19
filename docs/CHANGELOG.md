@@ -4,6 +4,16 @@ What changed in each version of Customer Records. The running version is shown i
 is tagged in git (`vX.Y.Z`). The history of the file converter this project is based on is in
 [converter/CHANGELOG.md](converter/CHANGELOG.md).
 
+## 1.8.0-sendsational — 1.8.0 on the `sendsational` branch
+
+1.8.0 (consent settings per column) merged into 1.7.0-sendsational, tagged `sendsational-1.8.0`.
+
+- **The records sent to the main app carry consent as the settings give it**: an *Email Opt In* = N with
+  *opt-ins only* is sent empty, an *Unsubscribed* = Yes with *opt-outs only* as `false` (BUCKET_FILES.md, `consent`).
+- Records sent before with consent mapped carry the old reading (a no as `false`). Deleting such an import's records
+  sends their deletion; re-running it (asked what each consent column records) sends the records again, read with
+  the settings.
+
 ## 1.8.0 — consent settings per column (file-converter 0.23.0)
 
 1.7.0 is the `sendsational` branch's version (sending to the main app's bucket), so `main` goes from 1.6.1 to 1.8.0.
