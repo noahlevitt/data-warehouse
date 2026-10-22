@@ -4,6 +4,13 @@ What changed in each version of Customer Records. The running version is shown i
 is tagged in git (`vX.Y.Z`). The history of the file converter this project is based on is in
 [converter/CHANGELOG.md](converter/CHANGELOG.md).
 
+## 1.9.0 — Find without File row, Any field and Phone problem
+
+- **Find no longer offers File row, Any field or Phone problem** (under *Other* in **＋ Add a field**). A record's
+  file row and phone problem are still kept, and still shown in the found set, its CSV and the record's details;
+  they just can't be searched. Search a specific field instead of Any field.
+- `main` only for now; the `sendsational` branch is still 1.8.0-sendsational.
+
 ## 1.8.0 — consent settings per column (file-converter 0.23.0)
 
 1.7.0 is the `sendsational` branch's version (sending to the main app's bucket), so `main` goes from 1.6.1 to 1.8.0.
