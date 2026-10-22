@@ -11,7 +11,7 @@ kind            searched on
 ==============  ===========================================================================================
 ``text``        a text column of the record (names, email, address, city, state, ZIP…)
 ``phone``       the record's phone numbers (any of them; digits only, any formatting typed)
-``number``      a number column (total visits, total spent), or the Record ID / file row
+``number``      a number column (total visits, total spent), or the Record ID
 ``job``         the import's number as the Imports page shows it
 ``date``        a date or date-time column; birthday / anniversary also take month/day without a year; also the
                 **Date** (key ``date``): the later of the last visit and the last call, as a day
@@ -21,15 +21,17 @@ kind            searched on
 ``first``       First name: the stored one, or the first part of a whole name kept in First name with no Last name
                 (split at a comma, else at the first space; ``criteria.name_condition``)
 ``last``        Last name: the stored one, or the rest of such a name
-``any``         every value of the record, cleaned and as written in the file ("Any field")
 ``column``      one column of the original file, as written ("Column: Points"), for columns that feed no field
 ``business``    the merchant: its ID (exact) or its name
 ``service``     the service's name
 ``tag``         the tags the record is in (by name)
 ``file``        the imported file's name
 ``created``     when the record was stored ("Record created", a date-time on the app's clock)
-``issue``       why the record has no usable phone number ("Phone problem")
 ==============  ===========================================================================================
+
+Not searched (1.9.0, Noah 2026-10-22): the file row, "Any field" (every value of the record together) and "Phone
+problem" (why a record has no usable number). Records still keep them, and the found set and a record's details
+show them.
 """
 
 from __future__ import annotations
@@ -66,8 +68,7 @@ PICKER_KEYS = {"business", "service"}
 
 def find_fields(schema: TargetSchema, columns_seen: list[str]) -> list[FindField]:
     """Every searchable field: common ones, record fields, the record's ID and import, then the file columns."""
-    out = [FindField("any", "Any field", "any", help="every value of the record, cleaned and as in the file"),
-           FindField("business", "Merchant", "business", help="merchant ID (exact) or name"),
+    out = [FindField("business", "Merchant", "business", help="merchant ID (exact) or name"),
            FindField("service", "Service", "service")]
     date = date_expr(schema)
     if date:
@@ -84,15 +85,12 @@ def find_fields(schema: TargetSchema, columns_seen: list[str]) -> list[FindField
         out.append(FindField(f"f:{f.name}", f.header, kind, column=f.name,
                              datetime=f.type == "datetime" and not date_only(f),
                              no_year_value=f.no_year_value, help=f.description))
-    out += [FindField("issue", "Phone problem", "issue", column="phone_issue",
-                      help="why the record has no usable phone number"),
-            FindField("tag", "Tag", "tag", help="tag name; * = in any tag, = = in no tag"),
+    out += [FindField("tag", "Tag", "tag", help="tag name; * = in any tag, = = in no tag"),
             FindField("import", "Import #", "job", help="the import's number on the Imports page"),
             FindField("file", "File name", "file"),
             FindField("created", "Record created", "created", datetime=True,
                       help="when the record was stored (its import), on the app's clock"),
-            FindField("record", "Record ID", "number", column="id", help="the record's own number"),
-            FindField("row", "File row", "number", column="file_row")]
+            FindField("record", "Record ID", "number", column="id", help="the record's own number")]
     out += [FindField(f"col:{c}", f"Column: {c}", "column", column=c, help="as written in the file")
             for c in columns_seen]
     return out
