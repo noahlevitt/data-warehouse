@@ -67,8 +67,9 @@ change them only when a converter fix is ported in (section 5).
   1.1.0 as update3, 1.2.0 as update4, 1.2.1 as update5, 1.3.0 as update6, 1.3.1 as update7, 1.4.0 as update8,
   1.5.0 as update9, 1.6.0 as update10 and 1.6.1 as update11 (with 1.6.0, for a copy still on 1.5.0). update12 (the
   bucket work as 1.7.0 on `main`) was withdrawn before it was installed; the `sendsational` branch came as update13
-  (1.7.0-sendsational); 1.8.0 and 1.8.0-sendsational came together as update14, 1.9.0 (`main` only) as update15, so
-  the next is `data-warehouse-update16.bundle`. Update this line with each bundle.
+  (1.7.0-sendsational); 1.8.0 and 1.8.0-sendsational came together as update14, 1.9.0 (`main` only) as update15 and
+  1.9.0-sendsational as update16, so the next is `data-warehouse-update17.bundle`. Update this line with each
+  bundle.
 - **Branches** (Noah, 2026-10-17): `main` is the standalone app; `sendsational` holds the connection to the main
   app through its bucket (records.bucket, BUCKET_FILES.md), which needs the main app's side to work. Its versions
   are `<version>-sendsational`, tagged `sendsational-<version>`; a bundle for it carries the branch
