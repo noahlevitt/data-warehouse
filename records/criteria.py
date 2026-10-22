@@ -5,7 +5,7 @@ Overview
 The syntax follows FileMaker, which the team knows; it is written out for people in :data:`SYNTAX` (shown under
 "How to search" on the Find page; the README has the same as a table), with FileMaker's differences marked ≠.
 No condition is ever "unknown" (NULL) for an empty value, which would break Omit: a text, number or date criterion
-on a column (or the Date, Any field, and each part of First / Last name) is joined with ``value IS NOT NULL`` (its
+on a column (or the Date, and each part of First / Last name) is joined with ``value IS NOT NULL`` (its
 condition is NULL exactly when the value is, so this is the same as false for empty values, and the value's index
 can be used); every other condition is wrapped in ``COALESCE(..., false)`` (:func:`condition`). Values are passed as query parameters (:class:`Params`), never
 pasted into the SQL. Upper and lower case never matter, also for accented letters (Åberg, MÓR): the database's own
@@ -55,7 +55,7 @@ Add a field) searches first and last together: `lisa ray`.
 **Gender**: `F` or `M` when the file said so, `Fb` or `Mb` when it is likely, guessed from the first name. As a
 word, `f` finds F and Fb, `=f` only F, `fb` only the guesses; `=` the records with none.
 
-**Text** (names, gender, email, address, city, Any field, file columns, Tag, File name)
+**Text** (names, gender, email, address, city, file columns, Tag, File name)
 - `smith` — a word starting with "smith" (Smith, Smithson; not Goldsmith); upper/lower case never matters
 - `john smith` — both words, in any order · `=smith` — the whole word · `==john smith` — exactly the whole field
 - `"main st"` — this exact text anywhere, punctuation included · `sm*th` — `*` is any characters
@@ -69,7 +69,7 @@ word, `f` finds F and Fb, `=f` only F, `fb` only the guesses; `=` the records wi
 - `5550100` — numbers containing these digits · `516*` or `+1 516*` — numbers starting with 516
 - `=` — no usable number · `*` — has a number
 
-**Numbers** (visits, spend, Record ID, Import #, File row)
+**Numbers** (visits, spend, Record ID, Import #)
 - `5` · `>5` · `<=100` · `10...20` (both included) · `...20` (20 or less) · `10...` (10 or more)
 - `$1,200.50` and `#12` are fine · `=` empty · `*` any value
 
@@ -651,7 +651,7 @@ def business_condition(text: str, p: Params) -> sql.Composable:
 
 # Kinds whose condition (except a sole = or *, which look for empty values themselves) is NULL exactly when the
 # searched value is: guarded with "value IS NOT NULL" instead of COALESCE, so the value's index can be used.
-_GUARDED_KINDS = ("text", "number", "date", "any")
+_GUARDED_KINDS = ("text", "number", "date")
 
 
 def condition(f: FindField, text: str, p: Params) -> sql.Composable:
@@ -666,15 +666,13 @@ def condition(f: FindField, text: str, p: Params) -> sql.Composable:
         raise CriterionError(f"{f.label}: {exc}") from None
     if f.kind in ("first", "last"):
         return cond                     # never NULL: name_condition guards each of its parts
-    if f.kind in _GUARDED_KINDS and (f.expr or f.column or f.kind == "any") and t.strip() not in ("=", "*"):
+    if f.kind in _GUARDED_KINDS and (f.expr or f.column) and t.strip() not in ("=", "*"):
         return _guard(cond, _value(f))
     return _coalesce(cond)
 
 
 def _value(f: FindField) -> sql.Composable:
-    """The searched value of a record field (its column), of the Date (its expression) or of Any field."""
-    if f.kind == "any":
-        return sql.SQL("r.search_text")
+    """The searched value of a record field (its column) or of the Date (its expression)."""
     return sql.SQL(f.expr) if f.expr else sql.SQL("r.{}").format(sql.Identifier(f.column))
 
 
@@ -684,10 +682,6 @@ def _condition(f: FindField, text: str, p: Params) -> sql.Composable:
     col = _value(f) if f.expr or f.column else None
     if f.kind == "text":
         return text_condition(col, t, p)
-    if f.kind == "issue":
-        # A record with a usable number has an empty problem (''): read as no value, so comparisons and ranges
-        # only find records that have a problem, as with any other empty field.
-        return text_condition(sql.SQL("NULLIF(r.phone_issue, '')"), t, p)
     if f.kind == "phone":
         return phone_condition(t, p)
     if f.kind == "number":
@@ -700,8 +694,6 @@ def _condition(f: FindField, text: str, p: Params) -> sql.Composable:
         return text_condition(sql.SQL("concat_ws(' ', r.first_name, r.last_name)"), t, p)
     if f.kind in ("first", "last"):
         return name_condition(f.kind, t, p)
-    if f.kind == "any":
-        return text_condition(_value(f), t, p)
     if f.kind == "column":
         return text_condition(sql.SQL("(r.source ->> {})").format(p(f.column)), t, p)
     if f.kind == "business":
