@@ -137,8 +137,8 @@ everything blank shows every record. Each request shows what is searched most: *
 merchants with several) and **Date**, then **Phone**, **First name** and **Last name**. Every
 other field is one click away under **＋ Add a field** (and taken off again with its ✕): Full name, Gender, Email, address,
 City, State, ZIP, Total visits, Total spent, Record created (the import date), Birthday, Anniversary, the other
-dates (first visit, last text, redemption, spin, contacted), Any field, Consent, Phone problem, Tag, Import #, File
-name, Record ID, File row and the files' own columns. In one request a record must match **everything filled in** (AND); several requests **add
+dates (first visit, last text, redemption, spin, contacted), Consent, Tag, Import #, File name, Record ID and the
+files' own columns (File row, Any field and Phone problem were taken off in 1.9.0). In one request a record must match **everything filled in** (AND); several requests **add
 up** (OR); an
 **Omit** request removes what it matches from what the requests above it found (FileMaker's rules: requests are
 applied top to bottom; an Omit as the first request starts from all records; a blank request is ignored). Enter in
