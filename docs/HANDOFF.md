@@ -3,11 +3,11 @@
 For whoever picks Customer Records up next: a person, or Claude in a new chat. It records what the code and the
 other documents don't: how changes are made and delivered, the decisions the business made, and what is still open.
 
-**State:** version 1.8.0-sendsational on this branch (1.8.0 on `main`), a prototype (see
+**State:** version 1.9.0-sendsational on this branch (1.9.0 on `main`), a prototype (see
 [CHANGELOG.md](CHANGELOG.md)), based on file-converter 0.21.2 with its 0.22.0 and 0.23.0 ported in (section 5).
 About 1,350 tests. Repository: github.com/noahlevitt/data-warehouse, with its own git history: it started from the
 converter's files, not from its history (section 5).
-Owner: Noah Levitt. Last updated 2026-10-19. Update this file with every release (section 4 in particular).
+Owner: Noah Levitt. Last updated 2026-10-22. Update this file with every release (section 4 in particular).
 
 What the tool does, and how, is in the [README](../README.md) and the documents it lists. Read
 [ARCHITECTURE.md](ARCHITECTURE.md) before changing code and [KNOWN_ISSUES.md](KNOWN_ISSUES.md) before calling
@@ -67,8 +67,8 @@ change them only when a converter fix is ported in (section 5).
   1.1.0 as update3, 1.2.0 as update4, 1.2.1 as update5, 1.3.0 as update6, 1.3.1 as update7, 1.4.0 as update8,
   1.5.0 as update9, 1.6.0 as update10 and 1.6.1 as update11 (with 1.6.0, for a copy still on 1.5.0). update12 (the
   bucket work as 1.7.0 on `main`) was withdrawn before it was installed; the `sendsational` branch came as update13
-  (1.7.0-sendsational); 1.8.0 and 1.8.0-sendsational came together as update14, so the next is
-  `data-warehouse-update15.bundle`. Update this line with each bundle.
+  (1.7.0-sendsational); 1.8.0 and 1.8.0-sendsational came together as update14, 1.9.0 (`main` only) as update15, so
+  the next is `data-warehouse-update16.bundle`. Update this line with each bundle.
 - **Branches** (Noah, 2026-10-17): `main` is the standalone app; `sendsational` holds the connection to the main
   app through its bucket (records.bucket, BUCKET_FILES.md), which needs the main app's side to work. Its versions
   are `<version>-sendsational`, tagged `sendsational-<version>`; a bundle for it carries the branch
@@ -120,7 +120,7 @@ Decided by Noah on 2026-10-14 unless marked otherwise. Don't reverse one without
 | Connecting to the main app | **A separate app first, connected through the main app's bucket, then built into the main app** (Noah, 2026-10-17: "get this up and running first and then work on the new features actually within the app"). Built in 1.7.0: completed imports (Customer Records' cleaned records with record, import, merchant and location IDs, not the original files; agreed 2026-10-16), deletions (a file with the same keys marked deleted; agreed 2026-10-16) and tag snapshots go to the bucket as CSV files (docs/BUCKET_FILES.md); the main app loads them. Finds are to read the main app's ClickHouse later (Customer Records' imports there plus its other data, the old FileMaker exports `sodb_export` and `client_users_export` included), not both databases. Later, in the main app (sendsational, a TypeScript monorepo; the lead developer allows work on a branch): its importer rebuilt around **services with saved column mappings** so new file types need no code, one ClickHouse table for all imports, the converter ported to TypeScript with the 406-file check as its test, lists (tags) as a segment source, and Find and Tags pages there; then this app retires. |
 | Platform | A web app or something launched on the computer, Mac first, Windows too. Built as the converter: a local web app (`./run_local.sh`), Docker for a server. |
 | Finds | Nothing is ever required; a blank Find shows every record. The common finds are a business, a business and one or more services, and a business without a service (an Omit request), so each request has Business and Services pickers; a business isn't required either (e.g. a phone number alone). Dates by day or range, also open-ended: `...1/1/2026` up to that day, `1/1/2025...` from it. Every record has its own ID and a creation date, both searchable. (Noah, 2026-10-14, after trying 1.0.2.) |
-| What finds look like | Searched most: Business, Last visit and Service; then a phone number; sometimes first name or first and last name; sometimes ZIP, city, state, address, total spent, birthday, visits, the record's creation (import) date; rarely the record ID. So a request shows Business, Services and Last visit, then Phone, First and Last name, and every other field is added with a click (Add a field). (Noah, 2026-10-14, after 1.1.0.) |
+| What finds look like | Searched most: Business, Last visit and Service; then a phone number; sometimes first name or first and last name; sometimes ZIP, city, state, address, total spent, birthday, visits, the record's creation (import) date; rarely the record ID. So a request shows Business, Services and Last visit, then Phone, First and Last name, and every other field is added with a click (Add a field). (Noah, 2026-10-14, after 1.1.0.) File row, Any field and Phone problem are not searched (Noah, 2026-10-22: Any field as a field made no sense; built in 1.9.0); the records keep them. |
 | Last visit | A date only, so searches are by days (`1/1/2026...1/20/2026`) and no time is involved. (Noah, 2026-10-14.) Consequence built in 1.2.0: the time in a file is dropped, exports write 12:00 AM. |
 | Names | First name must also find files that put the whole name in First name ("just give a name"); the logic was left to the developer ("figure it out"): a whole name kept in First name (no last name) is also searched as split at a comma, else at its first space; the stored value still matches; see README → Finding records. (Files with a *Name* / *Full Name* column are split by the converter at import, as before.) |
 | Date and days of the week | The last visit and the last call are one field, **Date**, searched as the last visit was; a day of the week can be searched in it (`Fri`, `Friday`: all Fridays), as part of the field or a separate one if necessary (Noah, 2026-10-15). Built in 1.3.0 in the field itself, in every date box: `fri`, `sat sun`, `mon...fri`, `fri 10/2026`. A record with both dates has the later as its Date; both stay stored and exported. |

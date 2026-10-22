@@ -262,6 +262,10 @@ def test_the_most_used_fields_are_shown_and_the_others_added(env):
     at = run_page("Find")
     assert [t.label for t in at.text_input][:4] == ["Date", "Phone", "First name", "Last name"]
     assert not [t for t in at.text_input if t.label in ("City", "Record created", "Full name")]
+    # Taken off Find in 1.9.0: no menu buttons for File row, Any field or Phone problem; Record ID and Tag stay.
+    menu = {b.label for b in at.button if b.key and b.key.startswith("fq_1_1_add_")}
+    assert {"Record ID", "Tag", "Import #", "File name", "Consent"} <= menu
+    assert not {"File row", "Any field", "Phone problem"} & menu
     by_label(at.text_input, "Last name").input("smith")
     at.button(key="fq_1_1_add_name").click().run()                    # Full name, from the menu
     assert by_label(at.text_input, "Last name").value == "smith"        # what was typed is kept

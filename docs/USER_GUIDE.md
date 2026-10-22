@@ -72,8 +72,8 @@ shows every record. Each **request** has:
 - **Phone**, **First name** and **Last name**.
 - **＋ Add a field**: a menu of every other field — Full name, Gender, Email, Address, City, State, ZIP, Total visits, Total
   spent, Record created (the day the record was imported), Birthday, Anniversary, the other dates (first visit,
-  last text, redemption, spin, contacted), Any field,
-  Consent, Phone problem, Tag, Import #, File name, Record ID, File row, and the files' own columns. A click adds
+  last text, redemption, spin, contacted), Consent, Tag, Import #, File name, Record ID, and the files' own
+  columns. A click adds
   its box to the request; the box's ✕ takes it off. What you typed elsewhere stays.
 
 Leave a box empty to ignore it. Type **`*`** alone to find the records where that field has a value, or **`=`**

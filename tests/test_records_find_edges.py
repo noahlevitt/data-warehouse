@@ -52,7 +52,7 @@ def test_accented_letters_in_any_case(data):
     for key, text, who in [("f:last_name", "åberg", ["Zoë"]), ("f:last_name", "ÅBERG", ["Zoë"]),
                            ("f:last_name", "Åb*", ["Zoë"]), ("f:last_name", '"åberg"', ["Zoë"]),
                            ("f:last_name", "MUÑOZ", ["José"]), ("name", "zoë åberg", ["Zoë"]),
-                           ("any", "mór", ["José"]), ("f:city", "åre", ["Zoë"])]:
+                           ("f:city", "mór", ["José"]), ("f:city", "åre", ["Zoë"])]:
         assert names(data, key, text) == who, (key, text)
 
 
@@ -173,7 +173,7 @@ def test_ellipsis_and_two_dots_are_the_range_operator(data):
     assert names(data, "f:transactions_last", "..10/8/2026") == up_to
     assert names(data, "f:transactions_last", "10/9/2026…") == ["José", "Zoë"]
     assert names(data, "f:last_name", "m…o") == ["José", "Sean"]
-    assert names(data, "any", '"…"') == []                       # in quotes it is just a character
+    assert names(data, "f:city", '"…"') == []                       # in quotes it is just a character
     with pytest.raises(F.FindError, match="three dots"):
         names(data, "f:last_name", "a....c")
 
