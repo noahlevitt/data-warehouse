@@ -4,6 +4,12 @@ What changed in each version of Customer Records. The running version is shown i
 is tagged in git (`vX.Y.Z`). The history of the file converter this project is based on is in
 [converter/CHANGELOG.md](converter/CHANGELOG.md).
 
+## 1.9.0-sendsational — 1.9.0 on the `sendsational` branch
+
+1.9.0 (Find without File row, Any field and Phone problem) merged into 1.8.0-sendsational, tagged
+`sendsational-1.9.0`. Nothing changes in what is sent to the main app: the files still carry each record's file row
+and phone problem.
+
 ## 1.9.0 — Find without File row, Any field and Phone problem
 
 - **Find no longer offers File row, Any field or Phone problem** (under *Other* in **＋ Add a field**). A record's
