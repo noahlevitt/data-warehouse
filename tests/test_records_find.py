@@ -134,9 +134,17 @@ def test_part_of_a_number_and_area_codes(data):
     assert len(one(data, "f:phone_number", "*")) == 6
 
 
-def test_phone_problems_are_searchable(data):
-    assert one(data, "issue", "*") == ["Mary O'Brien"]
-    assert one(data, "issue", "no phone") == ["Mary O'Brien"]
+def test_file_row_any_field_and_phone_problem_are_not_offered(records_schema):
+    """Taken off Find in 1.9.0 (Noah, 2026-10-22): the records keep them, but they aren't searched, and the Add a
+    field menu doesn't list them."""
+    from records.ui import find_layout
+    fields = find_fields(records_schema, ["Notes", "Phone"])
+    assert not {"row", "any", "issue"} & {f.key for f in fields}
+    assert not {"File row", "Any field", "Phone problem"} & {f.label for f in fields}
+    layout = find_layout(records_schema, fields)
+    menu = {f.label for group in layout.groups.values() for f in group}
+    assert {"Tag", "Import #", "File name", "Record ID", "Consent"} <= menu
+    assert not {"File row", "Any field", "Phone problem"} & menu
 
 
 # ------------------------------------------------------------------------------------------------ numbers
@@ -226,20 +234,12 @@ def test_business_by_id_or_name_and_service(data):
     assert one(data, "service", "square") == ["John Smith", "Peter Pan"]
 
 
-def test_phone_problem_comparisons_only_find_records_with_a_problem(data):
-    assert one(data, "issue", "<z") == ["Mary O'Brien"]
-    assert one(data, "issue", "...z") == ["Mary O'Brien"]
-    assert len(one(data, "issue", "=")) == 6
-
-
-def test_tags_files_imports_columns_any_field(data):
+def test_tags_files_imports_columns(data):
     assert one(data, "tag", "promo") == ["John Smith"]
     assert len(one(data, "tag", "=")) == 6
     assert one(data, "file", "square") == ["John Smith", "Peter Pan"]
     assert one(data, "col:Points", ">=20") == ["Ann Goldsmith"]  # text comparison on the cell as written
     assert one(data, "col:Notes", "vip") == ["John Smith"]
-    assert one(data, "any", "hoboken") == ["Mary O'Brien"]
-    assert one(data, "any", "vip") == ["John Smith"]
 
 
 def test_import_number_is_the_one_on_the_imports_page(data):
