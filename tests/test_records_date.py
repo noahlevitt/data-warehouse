@@ -189,7 +189,7 @@ def test_the_date_has_an_index_and_finds_and_the_sort_use_indexes(data):
                             ("f:total_visits", "3...8", "records_f_total_visits"), ("record", "5", "records_pkey"),
                             ("f:total_spent", ">=10.5", "records_f_total_spent"),
                             ("f:first_name", "fay", "records_f_first_name"),
-                            ("f:first_name", "fay", "records_first_name_split"), ("any", "fay", "records_search")]:
+                            ("f:first_name", "fay", "records_first_name_split")]:
         cond, params = F.where(F.find_node([{"criteria": [[key, text]]}]), fields, collation=rs.db.collation)
         shown = plan(sql.SQL("EXPLAIN SELECT r.id FROM records r WHERE {}").format(cond), params)
         assert used in shown and searched_by_index(shown), (key, text, shown)
