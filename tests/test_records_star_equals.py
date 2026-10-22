@@ -64,10 +64,8 @@ def test_a_sole_star_finds_filled_and_a_sole_equals_finds_blank_for_every_field(
     full, blank = {ids["full"]}, {ids["blank"]}
     both = full | blank
     # Which of the two records has a value in each field (default: "full" only).
-    has = {"issue": blank,                      # only the record without a number has a phone problem
-           "col:Notes": blank, "col:Extra": full,
-           "business": both, "service": both, "file": both, "import": both, "created": both, "record": both,
-           "row": both, "any": both}
+    has = {"col:Notes": blank, "col:Extra": full,
+           "business": both, "service": both, "file": both, "import": both, "created": both, "record": both}
     keys = [f.key for f in find_fields(schema, rs.columns_seen())]
     assert {"f:phone_number", "f:first_name", "name", "f:consent", "tag", "col:Notes"} <= set(keys)
     wrong = []
@@ -86,7 +84,7 @@ def test_star_and_equals_with_other_text_keep_their_meaning(two):
     rs, schema, ids = two
     full = {ids["full"]}
     for key, text in [("f:city", "bay*"), ("f:city", "=bayside"), ("f:city", "==bayside"), ("f:last_name", "l*e"),
-                      ("f:phone_number", "516*"), ("f:total_visits", "=3"), ("f:birthday", "5/*"), ("any", "bay*")]:
+                      ("f:phone_number", "516*"), ("f:total_visits", "=3"), ("f:birthday", "5/*")]:
         assert found(rs, schema, key, text) == full, (key, text)
     for key, text in [("f:city", "=bay"), ("f:city", "*x*")]:
         assert found(rs, schema, key, text) == set(), (key, text)
@@ -117,7 +115,7 @@ def test_an_omit_keeps_the_records_where_the_field_is_blank_for_every_field(two)
         kept = {r["id"] for r in F.page(rs.db, schema, cond, params, limit=100)}
         filled = found(rs, schema, f.key, matching[f.kind])
         assert kept == {ids["full"], ids["blank"]} - filled, f.key
-        if f.key not in ("record", "row"):                  # every record has an ID and a file row
+        if f.key != "record":                               # every record has an ID
             assert filled == {ids["full"]} and kept == {ids["blank"]}, f.key
         checked.append(f.key)
     assert {"f:city", "f:total_visits", "f:birthday", "f:transactions_last", "date", "record"} <= set(checked)
